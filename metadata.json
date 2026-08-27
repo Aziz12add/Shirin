@@ -1,0 +1,6 @@
+{
+  "name": "RayPanel - Proxy & Subscription Manager",
+  "description": "پنل اختصاصی ساخت و مدیریت کانفیگ‌های VLESS، Trojan، HTTP با قابلیت ساب‌اسکریپشن مهسا آن‌جی، دیپلوی روی Railway و مدیریت ترافیک",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
