@@ -1,29 +1,21 @@
-# Anybuild configuration for Shirin
-# Force Node/Express server deployment instead of static-web-server.
-
 load("//anybuild/tools:node.bzl", "node_build", "node_config", "node_serve")
 
 config = node_config(
     schema = 1,
 
-    # Start the actual Express server
     commands = {
         "start": "node dist/server.cjs",
     },
 
-    # Node runtime
     node_version = "24",
-
-    # Project uses Bun for installation/build
     node_package_manager = "bun",
 
-    # Explicitly identify this as a server application
+    # Express is the server runtime
     node_server = "node",
 
-    # Express/Vite project
-    node_framework = "express",
+    # Vite is the frontend framework/build system
+    node_framework = "vite",
 
-    # Build command from package.json
     node_build_command = "bun run build",
 )
 
