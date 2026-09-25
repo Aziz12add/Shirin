@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { ProxyConfig, UserAccount, TrafficRecord, DatabaseSettings } from './src/types';
 import { generateSubscriptionBase64, generateConfigUri } from './src/utils/configParsers';
 
@@ -136,8 +135,8 @@ const defaultUsers: UserAccount[] = [
     email: 'soshiant@example.com',
     token: 'sub_vip_soshiant_998877',
     quotaGB: 50,
-    usedUploadBytes: 1024 * 1024 * 450, // 450 MB
-    usedDownloadBytes: 1024 * 1024 * 1024 * 8.4, // 8.4 GB
+    usedUploadBytes: 1024 * 1024 * 450,
+    usedDownloadBytes: 1024 * 1024 * 1024 * 8.4,
     expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     active: true,
     allowedConfigs: ['all'],
@@ -169,7 +168,6 @@ interface DatabaseSchema {
   settings: DatabaseSettings;
 }
 
-// In-Memory Database initialized with disk or defaults
 let db: DatabaseSchema = {
   configs: defaultConfigs,
   users: defaultUsers,
@@ -182,12 +180,12 @@ let db: DatabaseSchema = {
   }
 };
 
-// Load database from disk if present
 function loadDatabase() {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(data);
+
       if (parsed.configs && Array.isArray(parsed.configs)) {
         db = parsed;
         console.log('Database loaded successfully from file.');
@@ -200,7 +198,6 @@ function loadDatabase() {
   }
 }
 
-// Persist database to disk
 function saveDatabase() {
   try {
     db.settings.lastSynced = new Date().toISOString();
@@ -213,10 +210,9 @@ function saveDatabase() {
 loadDatabase();
 
 // ==========================================
-// 1. SUBSCRIPTION ENDPOINTS (FOR MAHSANG / V2RAYNG)
+// 1. SUBSCRIPTION ENDPOINTS
 // ==========================================
 
-// Standard Subscription Handler
 const handleSubscription = (req: express.Request, res: express.Response) => {
   const token = req.params.token;
   const user = db.users.find(u => u.token === token);
@@ -230,33 +226,40 @@ const handleSubscription = (req: express.Request, res: express.Response) => {
   }
 
   const isExpired = new Date(user.expireAt).getTime() < Date.now();
-  const totalUsedBytes = user.usedUploadBytes + user.usedDownloadBytes;
+  const totalUsedBytes =
+    user.usedUploadBytes + user.usedDownloadBytes;
+
   const maxBytes = user.quotaGB * 1024 * 1024 * 1024;
   const isQuotaExceeded = totalUsedBytes >= maxBytes;
 
-  // Filter allowed configs
   let matchedConfigs = db.configs.filter(c => c.active);
+
   if (!user.allowedConfigs.includes('all')) {
-    matchedConfigs = matchedConfigs.filter(c => user.allowedConfigs.includes(c.id));
+    matchedConfigs = matchedConfigs.filter(
+      c => user.allowedConfigs.includes(c.id)
+    );
   }
 
-  // Update user last access & simulate slight sync traffic
   user.lastConnectedAt = new Date().toISOString();
   saveDatabase();
 
-  // Set standard Subscription headers (v2ray / MahsaNG / Clash compatible)
-  const expireTimestamp = Math.floor(new Date(user.expireAt).getTime() / 1000);
+  const expireTimestamp =
+    Math.floor(new Date(user.expireAt).getTime() / 1000);
+
   res.setHeader(
     'Subscription-Userinfo',
     `upload=${user.usedUploadBytes}; download=${user.usedDownloadBytes}; total=${maxBytes}; expire=${expireTimestamp}`
   );
-  res.setHeader('Profile-Update-Interval', '12'); // 12 hours refresh
+
+  res.setHeader('Profile-Update-Interval', '12');
   res.setHeader('Profile-Title', `RayPanel: ${user.username}`);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
   if (isExpired || isQuotaExceeded) {
-    // If expired/exceeded, return informative warning node or empty
-    const alertMsg = isExpired ? '⚠️ Subscription Expired' : '⚠️ Data Quota Exceeded';
+    const alertMsg = isExpired
+      ? '⚠️ Subscription Expired'
+      : '⚠️ Data Quota Exceeded';
+
     const dummyConfig: ProxyConfig = {
       id: 'alert-node',
       name: alertMsg,
@@ -269,17 +272,23 @@ const handleSubscription = (req: express.Request, res: express.Response) => {
       active: true,
       createdAt: new Date().toISOString()
     };
+
     return res.send(generateSubscriptionBase64([dummyConfig]));
   }
 
   const format = req.query.format as string;
+
   if (format === 'raw') {
-    const rawList = matchedConfigs.map(generateConfigUri).join('\n');
+    const rawList = matchedConfigs
+      .map(generateConfigUri)
+      .join('\n');
+
     return res.send(rawList);
   }
 
-  // Default: Base64 string list of URIs for MahsaNG / V2rayNG
-  const base64Sub = generateSubscriptionBase64(matchedConfigs);
+  const base64Sub =
+    generateSubscriptionBase64(matchedConfigs);
+
   return res.send(base64Sub);
 };
 
@@ -291,39 +300,67 @@ app.get('/api/sub/:token', handleSubscription);
 // ==========================================
 
 app.get('/api/configs', (req, res) => {
-  res.json({ success: true, configs: db.configs });
+  res.json({
+    success: true,
+    configs: db.configs
+  });
 });
 
 app.post('/api/configs', (req, res) => {
   const newConfig: ProxyConfig = {
     ...req.body,
     id: req.body.id || `cfg-${Date.now()}`,
-    createdAt: req.body.createdAt || new Date().toISOString(),
-    active: req.body.active !== undefined ? req.body.active : true,
+    createdAt:
+      req.body.createdAt || new Date().toISOString(),
+    active:
+      req.body.active !== undefined
+        ? req.body.active
+        : true,
   };
 
   db.configs.unshift(newConfig);
   saveDatabase();
-  res.json({ success: true, config: newConfig });
+
+  res.json({
+    success: true,
+    config: newConfig
+  });
 });
 
 app.put('/api/configs/:id', (req, res) => {
   const { id } = req.params;
   const index = db.configs.findIndex(c => c.id === id);
+
   if (index === -1) {
-    return res.status(404).json({ success: false, message: 'Config not found' });
+    return res.status(404).json({
+      success: false,
+      message: 'Config not found'
+    });
   }
 
-  db.configs[index] = { ...db.configs[index], ...req.body };
+  db.configs[index] = {
+    ...db.configs[index],
+    ...req.body
+  };
+
   saveDatabase();
-  res.json({ success: true, config: db.configs[index] });
+
+  res.json({
+    success: true,
+    config: db.configs[index]
+  });
 });
 
 app.delete('/api/configs/:id', (req, res) => {
   const { id } = req.params;
+
   db.configs = db.configs.filter(c => c.id !== id);
   saveDatabase();
-  res.json({ success: true, message: 'Config deleted' });
+
+  res.json({
+    success: true,
+    message: 'Config deleted'
+  });
 });
 
 // ==========================================
@@ -331,61 +368,107 @@ app.delete('/api/configs/:id', (req, res) => {
 // ==========================================
 
 app.get('/api/users', (req, res) => {
-  res.json({ success: true, users: db.users });
+  res.json({
+    success: true,
+    users: db.users
+  });
 });
 
 app.post('/api/users', (req, res) => {
-  const token = req.body.token || `sub_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`;
+  const token =
+    req.body.token ||
+    `sub_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`;
+
   const newUser: UserAccount = {
     id: req.body.id || `usr-${Date.now()}`,
-    username: req.body.username || 'user_' + Math.floor(Math.random() * 1000),
+    username:
+      req.body.username ||
+      'user_' + Math.floor(Math.random() * 1000),
     email: req.body.email || '',
     token,
     quotaGB: Number(req.body.quotaGB) || 30,
     usedUploadBytes: 0,
     usedDownloadBytes: 0,
-    expireAt: req.body.expireAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    active: req.body.active !== undefined ? req.body.active : true,
-    allowedConfigs: req.body.allowedConfigs || ['all'],
+    expireAt:
+      req.body.expireAt ||
+      new Date(
+        Date.now() + 30 * 24 * 60 * 60 * 1000
+      ).toISOString(),
+    active:
+      req.body.active !== undefined
+        ? req.body.active
+        : true,
+    allowedConfigs:
+      req.body.allowedConfigs || ['all'],
     notes: req.body.notes || '',
     createdAt: new Date().toISOString(),
   };
 
   db.users.unshift(newUser);
   saveDatabase();
-  res.json({ success: true, user: newUser });
+
+  res.json({
+    success: true,
+    user: newUser
+  });
 });
 
 app.put('/api/users/:id', (req, res) => {
   const { id } = req.params;
   const index = db.users.findIndex(u => u.id === id);
+
   if (index === -1) {
-    return res.status(404).json({ success: false, message: 'User not found' });
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
   }
 
-  db.users[index] = { ...db.users[index], ...req.body };
+  db.users[index] = {
+    ...db.users[index],
+    ...req.body
+  };
+
   saveDatabase();
-  res.json({ success: true, user: db.users[index] });
+
+  res.json({
+    success: true,
+    user: db.users[index]
+  });
 });
 
 app.post('/api/users/:id/reset-traffic', (req, res) => {
   const { id } = req.params;
   const user = db.users.find(u => u.id === id);
+
   if (!user) {
-    return res.status(404).json({ success: false, message: 'User not found' });
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
   }
 
   user.usedUploadBytes = 0;
   user.usedDownloadBytes = 0;
+
   saveDatabase();
-  res.json({ success: true, user });
+
+  res.json({
+    success: true,
+    user
+  });
 });
 
 app.delete('/api/users/:id', (req, res) => {
   const { id } = req.params;
+
   db.users = db.users.filter(u => u.id !== id);
   saveDatabase();
-  res.json({ success: true, message: 'User deleted' });
+
+  res.json({
+    success: true,
+    message: 'User deleted'
+  });
 });
 
 // ==========================================
@@ -393,11 +476,22 @@ app.delete('/api/users/:id', (req, res) => {
 // ==========================================
 
 app.post('/api/traffic/log', (req, res) => {
-  const { userId, uploadMB = 0, downloadMB = 0, configId } = req.body;
+  const {
+    userId,
+    uploadMB = 0,
+    downloadMB = 0,
+    configId
+  } = req.body;
+
   const user = db.users.find(u => u.id === userId);
+
   if (user) {
-    const uploadBytes = Number(uploadMB) * 1024 * 1024;
-    const downloadBytes = Number(downloadMB) * 1024 * 1024;
+    const uploadBytes =
+      Number(uploadMB) * 1024 * 1024;
+
+    const downloadBytes =
+      Number(downloadMB) * 1024 * 1024;
+
     user.usedUploadBytes += uploadBytes;
     user.usedDownloadBytes += downloadBytes;
     user.lastConnectedAt = new Date().toISOString();
@@ -411,32 +505,58 @@ app.post('/api/traffic/log', (req, res) => {
       downloadBytes,
     });
 
-    // Keep max 500 traffic history records
     if (db.traffic.length > 500) {
       db.traffic = db.traffic.slice(-500);
     }
 
     saveDatabase();
   }
-  res.json({ success: true, user });
+
+  res.json({
+    success: true,
+    user
+  });
 });
 
 app.get('/api/stats', (req, res) => {
   const totalConfigs = db.configs.length;
-  const activeConfigs = db.configs.filter(c => c.active).length;
+  const activeConfigs =
+    db.configs.filter(c => c.active).length;
+
   const totalUsers = db.users.length;
-  const activeUsers = db.users.filter(u => u.active).length;
+  const activeUsers =
+    db.users.filter(u => u.active).length;
 
   let totalQuotaBytes = 0;
   let usedBytes = 0;
 
   db.users.forEach(u => {
-    totalQuotaBytes += (u.quotaGB || 0) * 1024 * 1024 * 1024;
-    usedBytes += (u.usedUploadBytes || 0) + (u.usedDownloadBytes || 0);
+    totalQuotaBytes +=
+      (u.quotaGB || 0) *
+      1024 *
+      1024 *
+      1024;
+
+    usedBytes +=
+      (u.usedUploadBytes || 0) +
+      (u.usedDownloadBytes || 0);
   });
 
-  const totalTrafficGB = parseFloat((totalQuotaBytes / (1024 * 1024 * 1024)).toFixed(2));
-  const usedTrafficGB = parseFloat((usedBytes / (1024 * 1024 * 1024)).toFixed(2));
+  const totalTrafficGB =
+    parseFloat(
+      (
+        totalQuotaBytes /
+        (1024 * 1024 * 1024)
+      ).toFixed(2)
+    );
+
+  const usedTrafficGB =
+    parseFloat(
+      (
+        usedBytes /
+        (1024 * 1024 * 1024)
+      ).toFixed(2)
+    );
 
   res.json({
     success: true,
@@ -458,34 +578,70 @@ app.get('/api/stats', (req, res) => {
 // ==========================================
 
 app.get('/api/database/export', (req, res) => {
-  res.setHeader('Content-Disposition', 'attachment; filename="raypanel-backup.json"');
-  res.setHeader('Content-Type', 'application/json');
+  res.setHeader(
+    'Content-Disposition',
+    'attachment; filename="raypanel-backup.json"'
+  );
+
+  res.setHeader(
+    'Content-Type',
+    'application/json'
+  );
+
   res.send(JSON.stringify(db, null, 2));
 });
 
 app.post('/api/database/import', (req, res) => {
   try {
     const importedData = req.body;
-    if (importedData && Array.isArray(importedData.configs) && Array.isArray(importedData.users)) {
+
+    if (
+      importedData &&
+      Array.isArray(importedData.configs) &&
+      Array.isArray(importedData.users)
+    ) {
       db = {
         configs: importedData.configs,
         users: importedData.users,
         traffic: importedData.traffic || [],
-        settings: importedData.settings || db.settings
+        settings:
+          importedData.settings || db.settings
       };
+
       saveDatabase();
-      return res.json({ success: true, message: 'Data imported successfully' });
+
+      return res.json({
+        success: true,
+        message: 'Data imported successfully'
+      });
     }
-    return res.status(400).json({ success: false, message: 'Invalid data format' });
+
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid data format'
+    });
   } catch (err) {
-    return res.status(500).json({ success: false, message: 'Import failed' });
+    return res.status(500).json({
+      success: false,
+      message: 'Import failed'
+    });
   }
 });
 
 app.post('/api/database/settings', (req, res) => {
-  db.settings = { ...db.settings, ...req.body, status: 'connected', lastSynced: new Date().toISOString() };
+  db.settings = {
+    ...db.settings,
+    ...req.body,
+    status: 'connected',
+    lastSynced: new Date().toISOString()
+  };
+
   saveDatabase();
-  res.json({ success: true, settings: db.settings });
+
+  res.json({
+    success: true,
+    settings: db.settings
+  });
 });
 
 // ==========================================
@@ -494,22 +650,46 @@ app.post('/api/database/settings', (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    // IMPORTANT:
+    // Vite is loaded only in development.
+    // This prevents Rollup native binaries from
+    // being loaded on Wasmer WASI/wasm32 production.
+    const {
+      createServer: createViteServer
+    } = await import('vite');
+
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true
+      },
       appType: 'spa',
     });
+
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(
+      process.cwd(),
+      'dist'
+    );
+
     app.use(express.static(distPath));
+
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(
+        path.join(distPath, 'index.html')
+      );
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 RayPanel server listening on http://0.0.0.0:${PORT}`);
-  });
+  app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+      console.log(
+        `🚀 RayPanel server listening on http://0.0.0.0:${PORT}`
+      );
+    }
+  );
 }
 
 startServer();
