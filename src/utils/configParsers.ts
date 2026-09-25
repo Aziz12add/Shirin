@@ -312,6 +312,98 @@ export function generateRailwayJsonConfig(): string {
 }
 
 /**
+ * Generate wasmer.toml for Wasmer Edge deployment
+ */
+export function generateWasmerToml(packageName = 'raypanel-app'): string {
+  return `[package]
+name = "${packageName}"
+version = "0.1.0"
+description = "RayPanel - Proxy & MahsaNG Subscription Manager on Wasmer Edge"
+license = "MIT"
+
+[dependencies]
+"wasmer/static-web-server" = "^1"
+
+[[command]]
+name = "server"
+module = "wasmer/static-web-server:webserver"
+runner = "wasi"
+
+[fs]
+"/public" = "dist"
+`;
+}
+
+/**
+ * Generate app.yaml for Wasmer Edge deployment
+ */
+export function generateWasmerAppYaml(appName = 'raypanel-app'): string {
+  return `kind: wasmer.io/App.v0
+name: ${appName}
+package: .
+env:
+  NODE_ENV: production
+  PORT: "8080"
+capabilities:
+  instaboot: true
+`;
+}
+
+/**
+ * Generate Dockerfile for Wasmer / Container deployment
+ */
+export function generateWasmerDockerfile(): string {
+  return `# Multi-stage production build for Wasmer / Container Deploy
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# Production runner stage
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+
+RUN npm ci --only=production --ignore-scripts || npm install --omit=dev
+
+EXPOSE 8080
+EXPOSE 3000
+
+CMD ["node", "dist/server.cjs"]
+`;
+}
+
+/**
+ * Generate CLI commands for Wasmer deployment
+ */
+export function generateWasmerCliCommands(): string {
+  return `# 1. Install Wasmer CLI (Linux / macOS / WSL)
+curl https://get.wasmer.io -sSfL | sh
+
+# For Windows PowerShell:
+# iwr https://win.wasmer.io -useb | iex
+
+# 2. Authenticate with Wasmer
+wasmer login
+
+# 3. Build project locally
+npm run build
+
+# 4. Deploy directly to Wasmer Edge
+wasmer deploy
+`;
+}
+
+/**
  * Format bytes to readable human unit (KB, MB, GB)
  */
 export function formatBytes(bytes: number, decimals = 2): string {

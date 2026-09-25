@@ -1,0 +1,16 @@
+[package]
+name = "raypanel-app"
+version = "0.1.0"
+description = "RayPanel - Proxy & MahsaNG Subscription Manager on Wasmer Edge"
+license = "MIT"
+
+[dependencies]
+"wasmer/static-web-server" = "^1"
+
+[[command]]
+name = "server"
+module = "wasmer/static-web-server:webserver"
+runner = "wasi"
+
+[fs]
+"/public" = "dist"

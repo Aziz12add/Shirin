@@ -1,0 +1,8 @@
+kind: wasmer.io/App.v0
+name: raypanel-app
+package: .
+env:
+  NODE_ENV: production
+  PORT: "8080"
+capabilities:
+  instaboot: true

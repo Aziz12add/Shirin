@@ -6,7 +6,7 @@ import { ProxyConfig, UserAccount, TrafficRecord, DatabaseSettings } from './src
 import { generateSubscriptionBase64, generateConfigUri } from './src/utils/configParsers';
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
@@ -21,6 +21,42 @@ if (!fs.existsSync(DATA_DIR)) {
 
 // Initial seed data
 const defaultConfigs: ProxyConfig[] = [
+  {
+    id: 'cfg-vless-wasmer-1',
+    name: 'Wasmer Edge VLESS-WS (همراه اول / MCI)',
+    protocol: 'vless',
+    server: 'my-app.wasmer.app',
+    port: 443,
+    uuid: 'e7b1a23c-4d5e-6f7a-8b9c-0d1e2f3a4b5c',
+    transport: 'ws',
+    path: '/vless-wasmer',
+    host: 'my-app.wasmer.app',
+    sni: 'my-app.wasmer.app',
+    security: 'tls',
+    remark: '⚡ Wasmer VLESS WS-TLS 🇮🇷 MCI',
+    operatorPreset: 'mci',
+    cleanIp: '104.16.132.229',
+    active: true,
+    createdAt: new Date().toISOString(),
+  },
+  {
+    id: 'cfg-trojan-wasmer-2',
+    name: 'Wasmer Edge Trojan-WS (ایرانسل / Irancell)',
+    protocol: 'trojan',
+    server: 'my-app.wasmer.app',
+    port: 443,
+    password: 'WasmerPass_2026_SecureKey',
+    transport: 'ws',
+    path: '/trojan-wasmer',
+    host: 'my-app.wasmer.app',
+    sni: 'my-app.wasmer.app',
+    security: 'tls',
+    remark: '🚀 Wasmer Trojan WS-TLS 🇮🇷 Irancell',
+    operatorPreset: 'irancell',
+    cleanIp: '162.159.136.232',
+    active: true,
+    createdAt: new Date().toISOString(),
+  },
   {
     id: 'cfg-vless-railway-1',
     name: 'Railway VLESS-WS (MCI / همراه اول)',

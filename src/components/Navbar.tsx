@@ -47,7 +47,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'dashboard', labelFa: 'پیشخوان مدیریتی', labelEn: 'Dashboard', icon: Activity },
     { id: 'configs', labelFa: 'کانفیگ‌ها (VLESS/Trojan)', labelEn: 'Configs', icon: Layers },
     { id: 'users', labelFa: 'کاربران و ساب‌اسکریپشن', labelEn: 'Users & Sub', icon: Users },
-    { id: 'railway', labelFa: 'دیپلوی Railway', labelEn: 'Railway Deploy', icon: Radio },
+    { id: 'railway', labelFa: 'دیپلوی Wasmer و ابری', labelEn: 'Wasmer Deploy', icon: Radio },
     { id: 'traffic', labelFa: 'مانیتورینگ ترافیک', labelEn: 'Traffic Stats', icon: Sparkles },
     { id: 'database', labelFa: 'دیتابیس و بکاپ', labelEn: 'Database', icon: Database },
   ];
