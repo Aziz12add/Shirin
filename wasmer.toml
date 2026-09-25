@@ -3,14 +3,23 @@ name = "raypanel-app"
 version = "0.1.0"
 description = "RayPanel - Proxy & MahsaNG Subscription Manager on Wasmer Edge"
 license = "MIT"
+entrypoint = "server"
 
 [dependencies]
-"wasmer/static-web-server" = "^1"
+"wasmer/edgejs" = "0.1.24"
+
+[fs]
+"/app" = "."
 
 [[command]]
 name = "server"
-module = "wasmer/static-web-server:webserver"
-runner = "wasi"
+module = "wasmer/edgejs:node"
+runner = "https://webc.org/runner/wasi"
 
-[fs]
-"/public" = "dist"
+[command.annotations.wasi]
+main-args = ["/app/dist/server.cjs"]
+env = [
+  "NODE_ENV=production",
+  "PORT=8080",
+  "HOME=/tmp"
+]
