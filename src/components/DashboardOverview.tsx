@@ -178,26 +178,36 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           <div className="absolute -bottom-3 -left-3 text-white/[0.03] text-5xl font-serif select-none pointer-events-none">TRF</div>
         </div>
 
-        {/* Railway Status */}
+        {/* Live Proxy Engine Status */}
         <div className="rounded-xl border border-[#222222] bg-[#151515] p-5 relative overflow-hidden group hover:border-[#c5a47e]/40 transition-all">
           <div className="relative z-10 flex items-center justify-between">
             <span className="text-[11px] uppercase tracking-widest text-gray-400">
-              {lang === 'fa' ? 'وضعیت ریلوی (Railway)' : 'Railway Status'}
+              {lang === 'fa' ? 'موتور پروکسی داخلی' : 'Live Proxy Engine'}
             </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-500/10 text-green-400 border border-green-500/20">
-              <Radio className="h-4 w-4" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Zap className="h-4 w-4" />
             </div>
           </div>
-          <div className="relative z-10 mt-3 flex items-center gap-2">
-            <span className="text-xl font-serif text-green-400">
-              {lang === 'fa' ? 'متصل و فعال' : 'Sync Active'}
+          <div className="relative z-10 mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-serif text-emerald-400">
+              {stats?.liveConnections ?? 0}
+            </span>
+            <span className="text-xs text-gray-400 font-mono">
+              {lang === 'fa' ? 'اتصال آنلاین' : 'Active Conns'}
             </span>
           </div>
-          <div className="relative z-10 mt-2 flex items-center gap-1.5 text-[11px] text-gray-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-            <span>Dockerfile & Xray Engine</span>
+          <div className="relative z-10 mt-2 flex items-center justify-between text-[11px] text-gray-400">
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>VLESS & Trojan WS</span>
+            </div>
+            {stats && (stats.liveDownloadSpeedBps > 0 || stats.liveUploadSpeedBps > 0) && (
+              <span className="font-mono text-[#c5a47e]">
+                ↓ {formatBytes(stats.liveDownloadSpeedBps)}/s
+              </span>
+            )}
           </div>
-          <div className="absolute -bottom-3 -left-3 text-white/[0.03] text-5xl font-serif select-none pointer-events-none">RLW</div>
+          <div className="absolute -bottom-3 -left-3 text-white/[0.03] text-5xl font-serif select-none pointer-events-none">ENG</div>
         </div>
 
       </div>

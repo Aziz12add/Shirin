@@ -16,6 +16,7 @@
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.0.4",
     "canvas-confetti": "^1.9.4",
     "dotenv": "^17.2.3",
@@ -26,7 +27,8 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.10.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",

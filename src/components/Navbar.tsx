@@ -11,7 +11,9 @@ import {
   ExternalLink,
   Globe,
   Sparkles,
-  Server
+  Server,
+  LogOut,
+  UserCheck
 } from 'lucide-react';
 import { UserAccount } from '../types';
 
@@ -22,6 +24,8 @@ interface NavbarProps {
   setLang: (lang: 'fa' | 'en') => void;
   users: UserAccount[];
   appUrl: string;
+  adminUsername?: string;
+  onLogout?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -31,6 +35,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   setLang,
   users,
   appUrl,
+  adminUsername = 'admin',
+  onLogout,
 }) => {
   const [copied, setCopied] = React.useState(false);
   const primaryUser = users[0] || { token: 'sub_default_user' };
@@ -46,6 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navItems = [
     { id: 'dashboard', labelFa: 'پیشخوان مدیریتی', labelEn: 'Dashboard', icon: Activity },
     { id: 'configs', labelFa: 'کانفیگ‌ها (VLESS/Trojan)', labelEn: 'Configs', icon: Layers },
+    { id: 'cleanIps', labelFa: 'مدیریت Clean IP', labelEn: 'Clean IPs', icon: Globe },
     { id: 'users', labelFa: 'کاربران و ساب‌اسکریپشن', labelEn: 'Users & Sub', icon: Users },
     { id: 'railway', labelFa: 'دیپلوی Wasmer و ابری', labelEn: 'Wasmer Deploy', icon: Radio },
     { id: 'traffic', labelFa: 'مانیتورینگ ترافیک', labelEn: 'Traffic Stats', icon: Sparkles },
@@ -64,16 +71,16 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="font-serif text-xl font-medium tracking-tight text-white">
-                RayPanel
+                Shirin / RayPanel
               </span>
               <span className="rounded px-1.5 py-0.5 text-[10px] font-mono tracking-widest text-[#c5a47e] bg-[#c5a47e]/10 border border-[#c5a47e]/20">
-                PRO 2.5
+                PRO 3.0
               </span>
             </div>
             <p className="text-[11px] text-gray-500 tracking-wide font-light">
               {lang === 'fa' 
-                ? 'مدیریت اختصاصی پروتکل‌های VLESS، Trojan و ساب‌اسکریپشن مهسا آن‌جی' 
-                : 'Sophisticated Proxy & MahsaNG Subscription Manager'}
+                ? 'سرور پروکسی داخلی VLESS / Trojan و مدیریت هوشمند ساب‌اسکریپشن مهسا آن‌جی' 
+                : 'Native VLESS & Trojan Proxy Server with MahsaNG Subscription Manager'}
             </p>
           </div>
         </div>
@@ -103,6 +110,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </div>
 
+          {/* Admin User Badge */}
+          {adminUsername && (
+            <div className="flex items-center gap-1.5 rounded-lg border border-[#262626] bg-[#121212] px-3 py-1.5 text-xs text-gray-300">
+              <UserCheck className="h-3.5 w-3.5 text-[#c5a47e]" />
+              <span className="font-mono text-white">{adminUsername}</span>
+            </div>
+          )}
+
           {/* Language Switcher */}
           <button
             id="btn-switch-lang"
@@ -112,6 +127,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Globe className="h-3.5 w-3.5 text-[#c5a47e]" />
             <span>{lang === 'fa' ? 'English' : 'فارسی'}</span>
           </button>
+
+          {/* Logout Button */}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              title={lang === 'fa' ? 'خروج از حساب ادمین' : 'Log Out'}
+              className="flex items-center gap-1 rounded-lg border border-rose-900/30 bg-rose-950/20 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-950/50 hover:text-rose-200 transition-all"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>{lang === 'fa' ? 'خروج' : 'Logout'}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -138,7 +165,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             );
           })}
 
-          <div className="ml-auto flex lg:hidden items-center">
+          <div className="ml-auto flex lg:hidden items-center gap-2">
             <button
               onClick={() => setLang(lang === 'fa' ? 'en' : 'fa')}
               className="flex items-center gap-1 rounded border border-[#222222] bg-[#141414] px-2.5 py-1 text-xs text-gray-300"
@@ -146,6 +173,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Globe className="h-3 w-3 text-[#c5a47e]" />
               <span>{lang === 'fa' ? 'EN' : 'فا'}</span>
             </button>
+
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="flex items-center gap-1 rounded border border-rose-900/40 bg-rose-950/20 px-2.5 py-1 text-xs text-rose-300"
+              >
+                <LogOut className="h-3 w-3" />
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -22,11 +22,12 @@ import {
   Search,
   Filter
 } from 'lucide-react';
-import { ProxyConfig, ProxyProtocol, TransportType, SecurityType } from '../types';
+import { ProxyConfig, ProxyProtocol, TransportType, SecurityType, CleanIpEntry } from '../types';
 import { generateConfigUri, parseConfigUri } from '../utils/configParsers';
 
 interface ConfigManagerProps {
   configs: ProxyConfig[];
+  cleanIps?: CleanIpEntry[];
   onSaveConfig: (config: ProxyConfig) => void;
   onDeleteConfig: (id: string) => void;
   onToggleConfig: (id: string) => void;
@@ -36,6 +37,7 @@ interface ConfigManagerProps {
 
 export const ConfigManager: React.FC<ConfigManagerProps> = ({
   configs,
+  cleanIps = [],
   onSaveConfig,
   onDeleteConfig,
   onToggleConfig,
@@ -671,9 +673,26 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-gray-300 block mb-1.5">
-                    {lang === 'fa' ? 'آی‌پی تمیز کلودفلر (Clean IP - اختیاری)' : 'Clean IP (Optional)'}
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-gray-300">
+                      {lang === 'fa' ? 'آی‌پی تمیز کلودفلر (Clean IP)' : 'Clean IP'}
+                    </label>
+                    {cleanIps.length > 0 && (
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value) setFormConfig(prev => ({ ...prev, cleanIp: e.target.value }));
+                        }}
+                        className="text-[11px] bg-[#1a1a1a] text-[#c5a47e] border border-[#333] rounded px-1.5 py-0.5 outline-none max-w-[140px]"
+                      >
+                        <option value="">{lang === 'fa' ? 'انتخاب از لیست...' : 'Pick from list...'}</option>
+                        {cleanIps.filter(c => c.active).map(cip => (
+                          <option key={cip.id} value={cip.ip}>
+                            {cip.ip} ({cip.ispNameFa})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={formConfig.cleanIp || ''}

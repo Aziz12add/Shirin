@@ -22,10 +22,14 @@ export function generateVlessUri(config: ProxyConfig): string {
   if (config.flow) params.set('flow', config.flow);
   
   if (config.security === 'reality') {
+    params.set('security', 'reality');
+    params.set('encryption', 'none');
+    params.set('fp', 'chrome');
     if (config.realityPublicKey) params.set('pbk', config.realityPublicKey);
     if (config.realityShortId) params.set('sid', config.realityShortId);
     if (config.spiderX) params.set('spx', config.spiderX);
-    if (config.flow) params.set('flow', config.flow || 'xtls-rprx-vision');
+    params.set('flow', config.flow || 'xtls-rprx-vision');
+    if (config.sni || config.server) params.set('sni', config.sni || config.server);
   }
 
   const remark = encodeURIComponent(config.remark || config.name || 'VLESS Node');
@@ -144,6 +148,33 @@ export function generateSubscriptionBase64(configs: ProxyConfig[]): string {
     return btoa(unescape(encodeURIComponent(uris)));
   }
   return Buffer.from(uris).toString('base64');
+}
+
+/**
+ * Personalize configs with a specific user's UUID and Trojan credentials
+ */
+export function generateUserPersonalizedConfigs(
+  user: UserAccount,
+  baseConfigs: ProxyConfig[],
+  domainOverride?: string
+): ProxyConfig[] {
+  return baseConfigs
+    .filter(c => c.active && (user.allowedConfigs.includes('all') || user.allowedConfigs.includes(c.id)))
+    .map(c => {
+      const server = domainOverride && c.server.includes('my-app') ? domainOverride : c.server;
+      const host = domainOverride && c.host && c.host.includes('my-app') ? domainOverride : (c.host || server);
+      const sni = domainOverride && c.sni && c.sni.includes('my-app') ? domainOverride : (c.sni || server);
+
+      return {
+        ...c,
+        server,
+        host,
+        sni,
+        uuid: user.uuid || c.uuid,
+        password: user.trojanPassword || user.token || c.password,
+        remark: `${c.remark || c.name} [${user.username}]`,
+      };
+    });
 }
 
 /**

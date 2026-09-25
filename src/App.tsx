@@ -1,20 +1,38 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { DashboardOverview } from './components/DashboardOverview';
 import { ConfigManager } from './components/ConfigManager';
+import { CleanIpManager } from './components/CleanIpManager';
 import { UserManager } from './components/UserManager';
 import { RailwayDeployGuide } from './components/RailwayDeployGuide';
 import { TrafficSimulator } from './components/TrafficSimulator';
 import { DatabaseSettings } from './components/DatabaseSettings';
 import { SubscriptionModal } from './components/SubscriptionModal';
-import { ProxyConfig, UserAccount, SystemStats, DatabaseSettings as IDatabaseSettings } from './types';
+import { AdminLogin } from './components/AdminLogin';
+import { 
+  ProxyConfig, 
+  UserAccount, 
+  CleanIpEntry, 
+  SystemStats, 
+  DatabaseSettings as IDatabaseSettings 
+} from './types';
 import confetti from 'canvas-confetti';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [lang, setLang] = useState<'fa' | 'en'>('fa');
+
+  // Admin Auth State
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('shirin_admin_token') : null;
+  });
+  const [adminUser, setAdminUser] = useState<string | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+
+  // Core Data State
   const [configs, setConfigs] = useState<ProxyConfig[]>([]);
   const [users, setUsers] = useState<UserAccount[]>([]);
+  const [cleanIps, setCleanIps] = useState<CleanIpEntry[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [dbSettings, setDbSettings] = useState<IDatabaseSettings>({
     type: 'local_json',
@@ -27,21 +45,69 @@ export default function App() {
   const [isSubModalOpen, setIsSubModalOpen] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // App URL from window
   const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
-  // 1. Fetch initial data from server
-  const fetchAllData = async () => {
+  // Auth Headers helper
+  const getAuthHeaders = useCallback(() => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return headers;
+  }, [authToken]);
+
+  // Verify Admin Session on mount / token change
+  useEffect(() => {
+    const verifyAuth = async () => {
+      if (!authToken) {
+        setIsAuthChecking(false);
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        const data = await res.json();
+        if (data.authenticated) {
+          setAdminUser(data.username || 'admin');
+        } else {
+          setAuthToken(null);
+          localStorage.removeItem('shirin_admin_token');
+        }
+      } catch (err) {
+        console.error('Failed to verify token:', err);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    };
+
+    verifyAuth();
+  }, [authToken]);
+
+  // Fetch all core data
+  const fetchAllData = useCallback(async () => {
+    if (!authToken) return;
+
     try {
-      const [configsRes, usersRes, statsRes] = await Promise.all([
-        fetch('/api/configs'),
-        fetch('/api/users'),
-        fetch('/api/stats'),
+      const headers = getAuthHeaders();
+      const [configsRes, usersRes, cleanIpsRes, statsRes] = await Promise.all([
+        fetch('/api/configs', { headers }),
+        fetch('/api/users', { headers }),
+        fetch('/api/clean-ips', { headers }),
+        fetch('/api/stats', { headers }),
       ]);
 
       if (configsRes.ok) {
         const data = await configsRes.json();
         if (data.configs) setConfigs(data.configs);
+      } else if (configsRes.status === 401) {
+        setAuthToken(null);
+        localStorage.removeItem('shirin_admin_token');
+        return;
       }
 
       if (usersRes.ok) {
@@ -49,25 +115,75 @@ export default function App() {
         if (data.users) setUsers(data.users);
       }
 
+      if (cleanIpsRes.ok) {
+        const data = await cleanIpsRes.json();
+        if (data.cleanIps) setCleanIps(data.cleanIps);
+      }
+
       if (statsRes.ok) {
         const data = await statsRes.json();
-        if (data.stats) {
-          setStats(data.stats);
-          if (data.stats.settings) setDbSettings(data.stats.settings);
-        }
+        if (data.stats) setStats(data.stats);
       }
     } catch (err) {
       console.error('Error fetching data from API:', err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [authToken, getAuthHeaders]);
 
   useEffect(() => {
-    fetchAllData();
-  }, []);
+    if (authToken) {
+      fetchAllData();
+    }
+  }, [authToken, fetchAllData]);
 
-  // 2. Config Actions
+  // Periodic Live Stats Polling (every 3 seconds for real-time proxy metrics)
+  useEffect(() => {
+    if (!authToken) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/stats', { headers: getAuthHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.stats) setStats(data.stats);
+        }
+      } catch (err) {
+        // quiet error
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [authToken, getAuthHeaders]);
+
+  // Login handler
+  const handleLoginSuccess = (token: string, username: string) => {
+    localStorage.setItem('shirin_admin_token', token);
+    setAuthToken(token);
+    setAdminUser(username);
+    setIsLoading(true);
+    confetti({ particleCount: 40, spread: 70, origin: { y: 0.6 } });
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    try {
+      if (authToken) {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+    localStorage.removeItem('shirin_admin_token');
+    setAuthToken(null);
+    setAdminUser(null);
+    setActiveTab('dashboard');
+  };
+
+  // --- Config Actions ---
   const handleSaveConfig = async (newConfig: ProxyConfig) => {
     const isEdit = configs.some(c => c.id === newConfig.id);
     const method = isEdit ? 'PUT' : 'POST';
@@ -76,7 +192,7 @@ export default function App() {
     try {
       const res = await fetch(endpoint, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(newConfig),
       });
       const data = await res.json();
@@ -96,7 +212,7 @@ export default function App() {
   const handleDeleteConfig = async (id: string) => {
     if (!confirm(lang === 'fa' ? 'آیا از حذف این کانفیگ مطمئن هستید؟' : 'Delete this config?')) return;
     try {
-      await fetch(`/api/configs/${id}`, { method: 'DELETE' });
+      await fetch(`/api/configs/${id}`, { method: 'DELETE', headers: getAuthHeaders() });
       setConfigs(prev => prev.filter(c => c.id !== id));
     } catch (err) {
       console.error('Failed to delete config:', err);
@@ -110,7 +226,7 @@ export default function App() {
     await handleSaveConfig(updated);
   };
 
-  // 3. User Actions
+  // --- User Actions ---
   const handleSaveUser = async (newUser: UserAccount) => {
     const isEdit = users.some(u => u.id === newUser.id);
     const method = isEdit ? 'PUT' : 'POST';
@@ -119,7 +235,7 @@ export default function App() {
     try {
       const res = await fetch(endpoint, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(newUser),
       });
       const data = await res.json();
@@ -139,7 +255,7 @@ export default function App() {
   const handleDeleteUser = async (id: string) => {
     if (!confirm(lang === 'fa' ? 'آیا از حذف این کاربر مطمئن هستید؟' : 'Delete this user?')) return;
     try {
-      await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      await fetch(`/api/users/${id}`, { method: 'DELETE', headers: getAuthHeaders() });
       setUsers(prev => prev.filter(u => u.id !== id));
     } catch (err) {
       console.error('Failed to delete user:', err);
@@ -155,43 +271,77 @@ export default function App() {
 
   const handleResetUserTraffic = async (id: string) => {
     try {
-      const res = await fetch(`/api/users/${id}/reset-traffic`, { method: 'POST' });
+      const res = await fetch(`/api/users/${id}/reset-traffic`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
       const data = await res.json();
       if (data.user) {
         setUsers(prev => prev.map(u => u.id === id ? data.user : u));
+        fetchAllData();
       }
     } catch (err) {
       console.error('Failed to reset traffic:', err);
     }
   };
 
-  // 4. Traffic Logging Action
-  const handleLogTraffic = async (userId: string, uploadMB: number, downloadMB: number, configId: string) => {
+  // --- Clean IP Actions ---
+  const handleSaveCleanIp = async (newIp: CleanIpEntry) => {
+    const isEdit = cleanIps.some(ip => ip.id === newIp.id);
+    const method = isEdit ? 'PUT' : 'POST';
+    const endpoint = isEdit ? `/api/clean-ips/${newIp.id}` : '/api/clean-ips';
+
     try {
-      const res = await fetch('/api/traffic/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, uploadMB, downloadMB, configId }),
+      const res = await fetch(endpoint, {
+        method,
+        headers: getAuthHeaders(),
+        body: JSON.stringify(newIp),
       });
       const data = await res.json();
-      if (data.user) {
-        setUsers(prev => prev.map(u => u.id === userId ? data.user : u));
+      if (data.cleanIp) {
+        if (isEdit) {
+          setCleanIps(prev => prev.map(ip => ip.id === newIp.id ? data.cleanIp : ip));
+        } else {
+          setCleanIps(prev => [data.cleanIp, ...prev]);
+          confetti({ particleCount: 25, spread: 60, origin: { y: 0.7 } });
+        }
       }
     } catch (err) {
-      console.error('Failed to log traffic:', err);
+      console.error('Failed to save clean IP:', err);
     }
   };
 
-  // 5. Database Actions
-  const handleSaveDbSettings = async (newSettings: Partial<IDatabaseSettings>) => {
+  const handleDeleteCleanIp = async (id: string) => {
+    if (!confirm(lang === 'fa' ? 'آیا از حذف این Clean IP مطمئن هستید؟' : 'Delete this Clean IP?')) return;
     try {
-      const res = await fetch('/api/database/settings', {
+      await fetch(`/api/clean-ips/${id}`, { method: 'DELETE', headers: getAuthHeaders() });
+      setCleanIps(prev => prev.filter(ip => ip.id !== id));
+    } catch (err) {
+      console.error('Failed to delete clean IP:', err);
+    }
+  };
+
+  const handleTestCleanIpPing = async (id: string): Promise<number | null> => {
+    try {
+      const res = await fetch(`/api/clean-ips/${id}/ping`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings),
+        headers: getAuthHeaders()
       });
       const data = await res.json();
-      if (data.settings) setDbSettings(data.settings);
+      if (data.success && data.pingMs) {
+        setCleanIps(prev => prev.map(ip => ip.id === id ? { ...ip, pingMs: data.pingMs } : ip));
+        return data.pingMs;
+      }
+      return null;
+    } catch (err) {
+      return null;
+    }
+  };
+
+  // --- Database Settings ---
+  const handleSaveDbSettings = async (newSettings: Partial<IDatabaseSettings>) => {
+    try {
+      setDbSettings(prev => ({ ...prev, ...newSettings }));
     } catch (err) {
       console.error('Failed to update DB settings:', err);
     }
@@ -205,7 +355,7 @@ export default function App() {
     try {
       const res = await fetch('/api/database/import', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(importedData),
       });
       if (res.ok) {
@@ -228,6 +378,7 @@ export default function App() {
       id: 'default',
       username: 'default_user',
       token: 'sub_default',
+      uuid: config.uuid || '00000000-0000-0000-0000-000000000000',
       quotaGB: 50,
       usedUploadBytes: 0,
       usedDownloadBytes: 0,
@@ -243,12 +394,29 @@ export default function App() {
     setIsSubModalOpen(true);
   };
 
+  // If Auth check still in progress
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="flex items-center gap-3 text-[#c5a47e] text-sm">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-[#c5a47e] border-t-transparent" />
+          <span>در حال بررسی دسترسی ادمین...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // If not authenticated, show Admin Login Screen
+  if (!authToken) {
+    return <AdminLogin onLogin={handleLoginSuccess} lang={lang} />;
+  }
+
   return (
     <div 
       dir={lang === 'fa' ? 'rtl' : 'ltr'} 
       className="min-h-screen bg-[#0a0a0a] text-[#e0e0e0] font-sans antialiased selection:bg-[#c5a47e] selection:text-black"
     >
-      {/* Top Navigation */}
+      {/* Top Navigation Bar */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -256,6 +424,8 @@ export default function App() {
         setLang={setLang}
         users={users}
         appUrl={appUrl}
+        adminUsername={adminUser || 'admin'}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
@@ -264,7 +434,7 @@ export default function App() {
           <div className="flex h-64 items-center justify-center">
             <div className="flex items-center gap-3 text-[#c5a47e] text-sm font-semibold">
               <span className="h-5 w-5 animate-spin rounded-full border-2 border-[#c5a47e] border-t-transparent" />
-              <span>{lang === 'fa' ? 'در حال بارگذاری پایگاه داده...' : 'Loading RayPanel...'}</span>
+              <span>{lang === 'fa' ? 'در حال بارگذاری سرور و پایگاه داده...' : 'Loading Shirin / RayPanel...'}</span>
             </div>
           </div>
         ) : (
@@ -284,10 +454,21 @@ export default function App() {
             {activeTab === 'configs' && (
               <ConfigManager
                 configs={configs}
+                cleanIps={cleanIps}
                 onSaveConfig={handleSaveConfig}
                 onDeleteConfig={handleDeleteConfig}
                 onToggleConfig={handleToggleConfig}
                 onOpenQr={handleOpenConfigQr}
+                lang={lang}
+              />
+            )}
+
+            {activeTab === 'cleanIps' && (
+              <CleanIpManager
+                cleanIps={cleanIps}
+                onSaveIp={handleSaveCleanIp}
+                onDeleteIp={handleDeleteCleanIp}
+                onTestPing={handleTestCleanIpPing}
                 lang={lang}
               />
             )}
@@ -314,7 +495,13 @@ export default function App() {
               <TrafficSimulator
                 users={users}
                 configs={configs}
-                onLogTraffic={handleLogTraffic}
+                onLogTraffic={async (userId, upMB, downMB) => {
+                  try {
+                    await fetch('/api/stats', { headers: getAuthHeaders() });
+                  } catch (e) {
+                    // ignore
+                  }
+                }}
                 onResetUserTraffic={handleResetUserTraffic}
                 lang={lang}
               />

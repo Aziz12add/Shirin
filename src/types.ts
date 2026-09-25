@@ -33,6 +33,8 @@ export interface UserAccount {
   username: string;
   email?: string;
   token: string; // Secret sub token
+  uuid?: string; // Dedicated UUID for VLESS
+  trojanPassword?: string; // Dedicated password for Trojan
   quotaGB: number;
   usedUploadBytes: number;
   usedDownloadBytes: number;
@@ -42,6 +44,18 @@ export interface UserAccount {
   notes?: string;
   createdAt: string;
   lastConnectedAt?: string;
+}
+
+export interface CleanIpEntry {
+  id: string;
+  ip: string;
+  operator: 'mci' | 'irancell' | 'rightel' | 'fixed' | 'other';
+  name: string;
+  ispNameFa: string;
+  pingMs?: number;
+  active: boolean;
+  addedAt: string;
+  notes?: string;
 }
 
 export interface TrafficRecord {
@@ -54,11 +68,12 @@ export interface TrafficRecord {
 }
 
 export interface DatabaseSettings {
-  type: 'local_json' | 'postgres' | 'supabase' | 'firebase' | 'mongodb';
-  connectionString?: string;
-  status: 'connected' | 'disconnected' | 'syncing';
+  type: 'local_json' | 'sqlite' | 'postgres';
   autoBackup: boolean;
+  lastBackupAt?: string;
+  status: 'connected' | 'disconnected' | 'syncing';
   lastSynced?: string;
+  adminUsername?: string;
 }
 
 export interface SystemStats {
@@ -69,5 +84,15 @@ export interface SystemStats {
   totalTrafficGB: number;
   usedTrafficGB: number;
   todayTrafficMB: number;
-  railwayStatus: 'ready' | 'configured' | 'pending';
+  liveConnections: number;
+  totalConnectionsServed: number;
+  liveUploadSpeedBps: number;
+  liveDownloadSpeedBps: number;
+}
+
+export interface AdminSession {
+  authenticated: boolean;
+  token?: string;
+  username?: string;
+  expiresAt?: string;
 }
