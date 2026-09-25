@@ -5,7 +5,6 @@ import fs from 'fs';
 import net from 'net';
 import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { createServer as createViteServer } from 'vite';
 import { 
   ProxyConfig, 
   UserAccount, 
@@ -1011,6 +1010,7 @@ app.post('/api/database/import', requireAdminAuth, (req, res) => {
 // ==========================================
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
