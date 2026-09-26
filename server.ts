@@ -292,9 +292,21 @@ function loadDatabase() {
   }
 }
 
-// Atomic & Durable save
-function saveDatabase() {
+// Durable Database dirty flag & throttling state
+let isDbDirty = false;
+let isSaving = false;
+
+function markDatabaseDirty() {
+  isDbDirty = true;
+}
+
+// Atomic & Durable save with throttling
+function saveDatabase(force = false) {
+  if (!isDbDirty && !force) return;
+  if (isSaving) return;
+
   try {
+    isSaving = true;
     db.settings.lastSynced = new Date().toISOString();
     const jsonStr = JSON.stringify(db, null, 2);
     const tmpFile = `${DB_FILE}.tmp.${Date.now()}`;
@@ -305,23 +317,34 @@ function saveDatabase() {
 
     // Keep active backup
     fs.writeFileSync(DB_BACKUP_FILE, jsonStr, 'utf-8');
-  } catch (err) {
-    console.error('❌ Error saving database:', err);
+    isDbDirty = false;
+  } catch (err: any) {
+    console.error('❌ Error saving database:', err?.message || err);
+  } finally {
+    isSaving = false;
   }
 }
 
 loadDatabase();
 
-// Periodically create timestamped backup
+// Periodically persist database changes every 30 seconds if dirty
+setInterval(() => {
+  if (isDbDirty) {
+    saveDatabase();
+  }
+}, 30 * 1000);
+
+// Periodically create lightweight backup every 1 hour (single latest file to avoid disk/memory exhaustion)
 setInterval(() => {
   try {
-    const backupName = `backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    fs.writeFileSync(path.join(BACKUPS_DIR, backupName), JSON.stringify(db, null, 2), 'utf-8');
-    db.settings.lastBackupAt = new Date().toISOString();
+    if (fs.existsSync(DB_FILE)) {
+      fs.copyFileSync(DB_FILE, path.join(BACKUPS_DIR, 'latest-backup.json'));
+      db.settings.lastBackupAt = new Date().toISOString();
+    }
   } catch (err) {
     // ignore background backup error
   }
-}, 30 * 60 * 1000); // Every 30 mins
+}, 60 * 60 * 1000);
 
 // ==========================================
 // 2. EMBEDDED REAL PROXY SERVER ENGINE
@@ -349,6 +372,32 @@ function formatUuidFromBuffer(buf: Buffer): string {
   if (buf.length < 16) return '';
   const hex = buf.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+// Rate-limited reporting of unauthorized scanner/probe attempts to prevent log & memory flooding
+let rejectedVlessCount = 0;
+let lastRejectedVlessLog = 0;
+let rejectedTrojanCount = 0;
+let lastRejectedTrojanLog = 0;
+
+function reportUnauthorizedVless() {
+  rejectedVlessCount++;
+  const now = Date.now();
+  if (now - lastRejectedVlessLog > 60000) {
+    console.warn(`[VLESS] Dropped ${rejectedVlessCount} unauthorized probes/connections.`);
+    rejectedVlessCount = 0;
+    lastRejectedVlessLog = now;
+  }
+}
+
+function reportUnauthorizedTrojan() {
+  rejectedTrojanCount++;
+  const now = Date.now();
+  if (now - lastRejectedTrojanLog > 60000) {
+    console.warn(`[Trojan] Dropped ${rejectedTrojanCount} unauthorized probes/connections.`);
+    rejectedTrojanCount = 0;
+    lastRejectedTrojanLog = now;
+  }
 }
 
 // Parse VLESS packet and proxy to destination
@@ -385,13 +434,12 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       user = db.users.find(u => (u.uuid && u.uuid.toLowerCase() === clientUuid.toLowerCase()) || u.token === clientUuid) || null;
 
       if (!user) {
-        console.warn(`[VLESS] Unauthorized UUID rejected: ${clientUuid}`);
-        ws.close(4003, 'Unauthorized UUID');
+        reportUnauthorizedVless();
+        ws.close(4003, 'Unauthorized');
         return;
       }
 
       if (!user.active) {
-        console.warn(`[VLESS] Inactive user rejected: ${user.username}`);
         ws.close(4003, 'User account suspended');
         return;
       }
@@ -401,12 +449,12 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       const maxAllowedBytes = user.quotaGB * 1024 * 1024 * 1024;
 
       if (isExpired || totalUsedBytes >= maxAllowedBytes) {
-        console.warn(`[VLESS] Quota or expiration reached for: ${user.username}`);
         ws.close(4003, 'Traffic quota exceeded or expired');
         return;
       }
 
       user.lastConnectedAt = new Date().toISOString();
+      markDatabaseDirty();
 
       // Parse target address and port
       const addonLength = data[17];
@@ -461,7 +509,10 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
             const len = initialPayload.length;
             realTotalUploadBytes += len;
             uploadBytesWindow += len;
-            if (user) user.usedUploadBytes += len;
+            if (user) {
+              user.usedUploadBytes += len;
+              markDatabaseDirty();
+            }
           }
         });
 
@@ -472,7 +523,10 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
             const len = chunk.length;
             realTotalDownloadBytes += len;
             downloadBytesWindow += len;
-            if (user) user.usedDownloadBytes += len;
+            if (user) {
+              user.usedDownloadBytes += len;
+              markDatabaseDirty();
+            }
           }
         });
 
@@ -497,7 +551,10 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       const len = data.length;
       realTotalUploadBytes += len;
       uploadBytesWindow += len;
-      if (user) user.usedUploadBytes += len;
+      if (user) {
+        user.usedUploadBytes += len;
+        markDatabaseDirty();
+      }
     }
   });
 
@@ -506,7 +563,6 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
-    saveDatabase();
   });
 
   ws.on('error', () => {
@@ -547,7 +603,8 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       }) || null;
 
       if (!user) {
-        ws.close(4003, 'Unauthorized Trojan Password');
+        reportUnauthorizedTrojan();
+        ws.close(4003, 'Unauthorized');
         return;
       }
 
@@ -566,6 +623,7 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       }
 
       user.lastConnectedAt = new Date().toISOString();
+      markDatabaseDirty();
 
       // Parse target address
       // Bytes 56, 57 are \r\n
@@ -602,7 +660,10 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
             const len = initialPayload.length;
             realTotalUploadBytes += len;
             uploadBytesWindow += len;
-            if (user) user.usedUploadBytes += len;
+            if (user) {
+              user.usedUploadBytes += len;
+              markDatabaseDirty();
+            }
           }
         });
 
@@ -612,7 +673,10 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
             const len = chunk.length;
             realTotalDownloadBytes += len;
             downloadBytesWindow += len;
-            if (user) user.usedDownloadBytes += len;
+            if (user) {
+              user.usedDownloadBytes += len;
+              markDatabaseDirty();
+            }
           }
         });
 
@@ -630,7 +694,10 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       const len = data.length;
       realTotalUploadBytes += len;
       uploadBytesWindow += len;
-      if (user) user.usedUploadBytes += len;
+      if (user) {
+        user.usedUploadBytes += len;
+        markDatabaseDirty();
+      }
     }
   });
 
@@ -639,7 +706,6 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
-    saveDatabase();
   });
 
   ws.on('error', () => {
@@ -829,7 +895,7 @@ app.post('/api/configs', requireAdminAuth, (req, res) => {
     createdAt: new Date().toISOString(),
   };
   db.configs.unshift(newConfig);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, config: newConfig });
 });
 
@@ -839,13 +905,13 @@ app.put('/api/configs/:id', requireAdminAuth, (req, res) => {
   if (index === -1) return res.status(404).json({ error: 'Config not found' });
 
   db.configs[index] = { ...db.configs[index], ...req.body };
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, config: db.configs[index] });
 });
 
 app.delete('/api/configs/:id', requireAdminAuth, (req, res) => {
   db.configs = db.configs.filter(c => c.id !== req.params.id);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true });
 });
 
@@ -870,7 +936,7 @@ app.post('/api/users', requireAdminAuth, (req, res) => {
     createdAt: new Date().toISOString(),
   };
   db.users.unshift(newUser);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, user: newUser });
 });
 
@@ -880,13 +946,13 @@ app.put('/api/users/:id', requireAdminAuth, (req, res) => {
   if (index === -1) return res.status(404).json({ error: 'User not found' });
 
   db.users[index] = { ...db.users[index], ...req.body };
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, user: db.users[index] });
 });
 
 app.delete('/api/users/:id', requireAdminAuth, (req, res) => {
   db.users = db.users.filter(u => u.id !== req.params.id);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true });
 });
 
@@ -896,7 +962,7 @@ app.post('/api/users/:id/reset-traffic', requireAdminAuth, (req, res) => {
 
   user.usedUploadBytes = 0;
   user.usedDownloadBytes = 0;
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, user });
 });
 
@@ -913,7 +979,7 @@ app.post('/api/clean-ips', requireAdminAuth, (req, res) => {
     active: req.body.active !== undefined ? req.body.active : true
   };
   db.cleanIps.unshift(newIp);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, cleanIp: newIp });
 });
 
@@ -921,13 +987,13 @@ app.put('/api/clean-ips/:id', requireAdminAuth, (req, res) => {
   const index = db.cleanIps.findIndex(ip => ip.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'IP not found' });
   db.cleanIps[index] = { ...db.cleanIps[index], ...req.body };
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true, cleanIp: db.cleanIps[index] });
 });
 
 app.delete('/api/clean-ips/:id', requireAdminAuth, (req, res) => {
   db.cleanIps = db.cleanIps.filter(ip => ip.id !== req.params.id);
-  saveDatabase();
+  saveDatabase(true);
   res.json({ success: true });
 });
 
@@ -943,7 +1009,7 @@ app.post('/api/clean-ips/:id/ping', requireAdminAuth, async (req, res) => {
     const latency = Date.now() - start;
     entry.pingMs = latency;
     sock.destroy();
-    saveDatabase();
+    markDatabaseDirty();
     res.json({ success: true, pingMs: latency });
   });
 
@@ -996,7 +1062,7 @@ app.post('/api/database/import', requireAdminAuth, (req, res) => {
         ...imported,
         cleanIps: Array.isArray(imported.cleanIps) ? imported.cleanIps : db.cleanIps,
       };
-      saveDatabase();
+      saveDatabase(true);
       return res.json({ success: true, message: 'Database imported successfully' });
     }
     res.status(400).json({ success: false, message: 'Invalid database schema' });
