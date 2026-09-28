@@ -10,3 +10,7 @@ capabilities:
   instaboot:
     requests:
       - path: /
+     
+      locality:
+  regions:
+    - fr-roub1
