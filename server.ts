@@ -1080,6 +1080,45 @@ app.post('/api/users/:id/reset-traffic', requireAdminAuth, (req, res) => {
   res.json({ success: true, user });
 });
 
+app.post('/api/users/:id/inject-traffic', requireAdminAuth, (req, res) => {
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const { uploadMB = 0, downloadMB = 0, configId } = req.body;
+  const upBytes = Math.round(Number(uploadMB) * 1024 * 1024);
+  const downBytes = Math.round(Number(downloadMB) * 1024 * 1024);
+
+  user.usedUploadBytes += upBytes;
+  user.usedDownloadBytes += downBytes;
+  user.lastConnectedAt = new Date().toISOString();
+
+  realTotalUploadBytes += upBytes;
+  realTotalDownloadBytes += downBytes;
+  uploadBytesWindow += upBytes;
+  downloadBytesWindow += downBytes;
+
+  // Record capped traffic entry
+  if (!Array.isArray(db.traffic)) db.traffic = [];
+  db.traffic.push({
+    id: `trf-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    userId: user.id,
+    configId: configId || 'manual',
+    uploadBytes: upBytes,
+    downloadBytes: downBytes
+  });
+  if (db.traffic.length > 100) {
+    db.traffic = db.traffic.slice(-100);
+  }
+
+  saveDatabase(true);
+  res.json({ 
+    success: true, 
+    user, 
+    injected: { uploadMB, downloadMB } 
+  });
+});
+
 // --- Clean IP API ---
 app.get('/api/clean-ips', requireAdminAuth, (req, res) => {
   res.json({ cleanIps: db.cleanIps });
@@ -1154,7 +1193,9 @@ app.get('/api/stats', requireAdminAuth, (req, res) => {
     liveConnections: liveConnectionsCount,
     totalConnectionsServed,
     liveUploadSpeedBps,
-    liveDownloadSpeedBps
+    liveDownloadSpeedBps,
+    totalUploadBytes: realTotalUploadBytes,
+    totalDownloadBytes: realTotalDownloadBytes,
   };
 
   res.json({ stats });

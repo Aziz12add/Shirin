@@ -495,11 +495,20 @@ export default function App() {
               <TrafficSimulator
                 users={users}
                 configs={configs}
-                onLogTraffic={async (userId, upMB, downMB) => {
+                authToken={authToken}
+                stats={stats}
+                onLogTraffic={async (userId, upMB, downMB, configId) => {
                   try {
-                    await fetch('/api/stats', { headers: getAuthHeaders() });
+                    const res = await fetch(`/api/users/${userId}/inject-traffic`, {
+                      method: 'POST',
+                      headers: getAuthHeaders(),
+                      body: JSON.stringify({ uploadMB: upMB, downloadMB: downMB, configId }),
+                    });
+                    if (res.ok) {
+                      fetchAllData();
+                    }
                   } catch (e) {
-                    // ignore
+                    console.error('Failed to inject traffic:', e);
                   }
                 }}
                 onResetUserTraffic={handleResetUserTraffic}

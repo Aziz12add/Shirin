@@ -88,6 +88,8 @@ export interface SystemStats {
   totalConnectionsServed: number;
   liveUploadSpeedBps: number;
   liveDownloadSpeedBps: number;
+  totalUploadBytes?: number;
+  totalDownloadBytes?: number;
 }
 
 export interface AdminSession {
