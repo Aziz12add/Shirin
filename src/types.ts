@@ -24,6 +24,11 @@ export interface ProxyConfig {
   remark: string;
   operatorPreset?: 'all' | 'mci' | 'irancell' | 'rightel' | 'mokhaberat' | 'custom';
   cleanIp?: string;
+  // Fragment anti-censorship parameters (supported by MahsaNG, V2rayNG, sing-box, Xray)
+  fragment?: boolean;
+  fragmentLength?: string; // e.g. "10-50" or "50-100"
+  fragmentInterval?: string; // e.g. "10-20" or "20-50" (ms)
+  fragmentPackets?: string; // e.g. "1-3" or "tlshello"
   active: boolean;
   createdAt: string;
 }

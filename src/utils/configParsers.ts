@@ -32,6 +32,18 @@ export function generateVlessUri(config: ProxyConfig): string {
     if (config.sni || config.server) params.set('sni', config.sni || config.server);
   }
 
+  // Fragment anti-censorship parameters (recognized by MahsaNG, V2rayNG, Xray-core)
+  // Format in URI query: fragment=10-50,20-50,tlshello or separate params
+  if (config.fragment) {
+    const fLen = config.fragmentLength || '10-50';
+    const fInterval = config.fragmentInterval || '20-50';
+    const fPackets = config.fragmentPackets || '1-3';
+    params.set('fragment', `${fLen},${fInterval},${fPackets}`);
+    params.set('fragmentLength', fLen);
+    params.set('fragmentInterval', fInterval);
+    params.set('fragmentPackets', fPackets);
+  }
+
   const remark = encodeURIComponent(config.remark || config.name || 'VLESS Node');
   return `vless://${uuid}@${host}:${port}?${params.toString()}#${remark}`;
 }
@@ -170,8 +182,13 @@ export function generateUserPersonalizedConfigs(
         server,
         host,
         sni,
+        // Mandatory user.uuid override: VLESS auth checks db.users[].uuid so link must have user's exact UUID
         uuid: user.uuid || c.uuid,
         password: user.trojanPassword || user.token || c.password,
+        fragment: c.fragment,
+        fragmentLength: c.fragmentLength,
+        fragmentInterval: c.fragmentInterval,
+        fragmentPackets: c.fragmentPackets,
         remark: `${c.remark || c.name} [${user.username}]`,
       };
     });
@@ -191,6 +208,18 @@ export function parseConfigUri(uri: string): Partial<ProxyConfig> | null {
       const search = parsed.searchParams;
       const remark = decodeURIComponent(parsed.hash.replace('#', '') || 'Imported VLESS');
 
+      const fragQuery = search.get('fragment');
+      let fragLength = search.get('fragmentLength') || '10-50';
+      let fragInterval = search.get('fragmentInterval') || '20-50';
+      let fragPackets = search.get('fragmentPackets') || '1-3';
+
+      if (fragQuery) {
+        const parts = fragQuery.split(',');
+        if (parts[0]) fragLength = parts[0];
+        if (parts[1]) fragInterval = parts[1];
+        if (parts[2]) fragPackets = parts[2];
+      }
+
       return {
         protocol: 'vless',
         server,
@@ -205,6 +234,10 @@ export function parseConfigUri(uri: string): Partial<ProxyConfig> | null {
         realityPublicKey: search.get('pbk') || '',
         realityShortId: search.get('sid') || '',
         spiderX: search.get('spx') || '',
+        fragment: Boolean(fragQuery || search.get('fragmentLength')),
+        fragmentLength: fragLength,
+        fragmentInterval: fragInterval,
+        fragmentPackets: fragPackets,
         remark,
         name: remark,
         active: true,

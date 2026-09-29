@@ -22,11 +22,12 @@ import {
   Search,
   Filter
 } from 'lucide-react';
-import { ProxyConfig, ProxyProtocol, TransportType, SecurityType, CleanIpEntry } from '../types';
+import { ProxyConfig, ProxyProtocol, TransportType, SecurityType, CleanIpEntry, UserAccount } from '../types';
 import { generateConfigUri, parseConfigUri } from '../utils/configParsers';
 
 interface ConfigManagerProps {
   configs: ProxyConfig[];
+  users?: UserAccount[];
   cleanIps?: CleanIpEntry[];
   onSaveConfig: (config: ProxyConfig) => void;
   onDeleteConfig: (id: string) => void;
@@ -37,6 +38,7 @@ interface ConfigManagerProps {
 
 export const ConfigManager: React.FC<ConfigManagerProps> = ({
   configs,
+  users = [],
   cleanIps = [],
   onSaveConfig,
   onDeleteConfig,
@@ -705,19 +707,38 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
 
               {/* UUID / Password Keys */}
               {formConfig.protocol === 'vless' || formConfig.protocol === 'vmess' ? (
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
                     <label className="text-xs font-medium text-gray-300">
-                      {lang === 'fa' ? 'شناسه کاربر (UUID)' : 'User UUID'}
+                      {lang === 'fa' ? 'شناسه کاربر (UUID احراز هویت):' : 'Authentication UUID:'}
                     </label>
-                    <button
-                      type="button"
-                      onClick={handleGenerateUUID}
-                      className="text-[11px] text-[#c5a47e] hover:text-[#b3936d] flex items-center gap-1 font-medium"
-                    >
-                      <Shuffle className="h-3 w-3" />
-                      {lang === 'fa' ? 'تولید UUID جدید' : 'Generate UUID'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {users.length > 0 && (
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              setFormConfig(prev => ({ ...prev, uuid: e.target.value }));
+                            }
+                          }}
+                          className="text-[11px] bg-[#1a1a1a] text-[#c5a47e] border border-[#333] rounded px-1.5 py-0.5 outline-none max-w-[170px]"
+                        >
+                          <option value="">{lang === 'fa' ? 'انتخاب از کاربران...' : 'Select User UUID...'}</option>
+                          {users.map(u => (
+                            <option key={u.id} value={u.uuid || u.token}>
+                              {u.username} ({u.uuid?.slice(0, 8)}...)
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleGenerateUUID}
+                        className="text-[11px] text-[#c5a47e] hover:text-[#b3936d] flex items-center gap-1 font-medium"
+                      >
+                        <Shuffle className="h-3 w-3" />
+                        <span>{lang === 'fa' ? 'تولید UUID جدید' : 'New UUID'}</span>
+                      </button>
+                    </div>
                   </div>
                   <input
                     type="text"
@@ -726,6 +747,16 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                     onChange={(e) => setFormConfig(prev => ({ ...prev, uuid: e.target.value }))}
                     className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
                   />
+                  {formConfig.protocol === 'vless' && users.length > 0 && !users.some(u => u.uuid?.toLowerCase() === formConfig.uuid?.toLowerCase()) && (
+                    <div className="text-[11px] text-amber-400 bg-amber-950/20 border border-amber-900/40 p-2 rounded-lg flex items-center gap-1.5">
+                      <span>⚠️</span>
+                      <span>
+                        {lang === 'fa' 
+                          ? 'توجه: سرور VLESS فقط اتصال با UUID کاربران موجود در تب «کاربران» را قبول می‌کند. بهتر است UUID بالا را از منوی بالا انتخاب کنید یا بعداً در کاربر هم همین را بگذارید.' 
+                          : 'Notice: Server checks incoming handshakes against Users UUID list. Make sure this UUID matches a user.'}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : formConfig.protocol === 'trojan' ? (
                 <div>
@@ -847,6 +878,77 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                     className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
                   />
                 </div>
+              </div>
+
+              {/* Fragment Anti-Censorship Settings (MahsaNG & V2rayNG) */}
+              <div className="rounded-xl border border-[#2a2a2a] bg-[#0c0c0c] p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-[#c5a47e]" />
+                    <div>
+                      <span className="text-xs font-medium text-white block">
+                        {lang === 'fa' ? 'فراگمنت ضد فیلتر (Fragment Anti-Censorship)' : 'Fragment Anti-Censorship'}
+                      </span>
+                      <span className="text-[10px] text-gray-500">
+                        {lang === 'fa' 
+                          ? 'تکه تکه کردن پکت‌های TLS برای دور زدن فیلترینگ همراه اول و ایرانسل در مهسا آن‌جی' 
+                          : 'Split TLS Client Hello packets to bypass SNI inspection in MahsaNG / V2rayNG'}
+                      </span>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formConfig.fragment ?? false}
+                      onChange={(e) => setFormConfig(prev => ({ ...prev, fragment: e.target.checked }))}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-[#222222] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#c5a47e]"></div>
+                  </label>
+                </div>
+
+                {formConfig.fragment && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#1e1e1e]">
+                    <div>
+                      <label className="text-[11px] text-gray-400 block mb-1">
+                        {lang === 'fa' ? 'طول پکت (Length):' : 'Fragment Length:'}
+                      </label>
+                      <input
+                        type="text"
+                        value={formConfig.fragmentLength || '10-50'}
+                        onChange={(e) => setFormConfig(prev => ({ ...prev, fragmentLength: e.target.value }))}
+                        placeholder="10-50"
+                        className="w-full rounded-lg border border-[#262626] bg-[#070707] px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-gray-400 block mb-1">
+                        {lang === 'fa' ? 'فاصله میلی‌ثانیه (Interval):' : 'Interval (ms):'}
+                      </label>
+                      <input
+                        type="text"
+                        value={formConfig.fragmentInterval || '20-50'}
+                        onChange={(e) => setFormConfig(prev => ({ ...prev, fragmentInterval: e.target.value }))}
+                        placeholder="20-50"
+                        className="w-full rounded-lg border border-[#262626] bg-[#070707] px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-gray-400 block mb-1">
+                        {lang === 'fa' ? 'بسته‌ها (Packets):' : 'Packets:'}
+                      </label>
+                      <input
+                        type="text"
+                        value={formConfig.fragmentPackets || 'tlshello'}
+                        onChange={(e) => setFormConfig(prev => ({ ...prev, fragmentPackets: e.target.value }))}
+                        placeholder="tlshello یا 1-3"
+                        className="w-full rounded-lg border border-[#262626] bg-[#070707] px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Live URI Preview */}

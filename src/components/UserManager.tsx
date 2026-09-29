@@ -9,12 +9,13 @@ import {
   RotateCcw, 
   Power, 
   HardDrive, 
-  Clock, 
   Key, 
   ShieldCheck, 
   Sparkles,
-  ExternalLink,
-  Plus
+  RefreshCw,
+  Fingerprint,
+  Lock,
+  CheckCircle2
 } from 'lucide-react';
 import { UserAccount, ProxyConfig } from '../types';
 import { formatBytes } from '../utils/configParsers';
@@ -26,6 +27,7 @@ interface UserManagerProps {
   onDeleteUser: (id: string) => void;
   onResetTraffic: (id: string) => void;
   onToggleUser: (id: string) => void;
+  onResetUserUuid?: (user: UserAccount) => void;
   onOpenSubModal: (user: UserAccount) => void;
   lang: 'fa' | 'en';
   appUrl: string;
@@ -38,18 +40,22 @@ export const UserManager: React.FC<UserManagerProps> = ({
   onDeleteUser,
   onResetTraffic,
   onToggleUser,
+  onResetUserUuid,
   onOpenSubModal,
   lang,
   appUrl,
 }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [copiedUuid, setCopiedUuid] = useState<string | null>(null);
 
   // Form State
   const [formUser, setFormUser] = useState<Partial<UserAccount>>({
     username: '',
     email: '',
     token: '',
+    uuid: '',
+    trojanPassword: '',
     quotaGB: 30,
     expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     active: true,
@@ -59,9 +65,27 @@ export const UserManager: React.FC<UserManagerProps> = ({
 
   const origin = typeof window !== 'undefined' ? window.location.origin : (appUrl || 'https://raypanel.app');
 
+  const generateRandomUuid = () => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
+
   const handleGenerateToken = () => {
     const token = `sub_${Math.random().toString(36).substring(2, 8)}_${Date.now().toString(36)}`;
     setFormUser(prev => ({ ...prev, token }));
+  };
+
+  const handleGenerateUuid = () => {
+    const uuid = generateRandomUuid();
+    setFormUser(prev => ({ ...prev, uuid }));
+  };
+
+  const handleGenerateTrojanPassword = () => {
+    const pass = `Pass_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36).slice(-4)}`;
+    setFormUser(prev => ({ ...prev, trojanPassword: pass }));
   };
 
   const handleCopySubUrl = (user: UserAccount) => {
@@ -71,13 +95,48 @@ export const UserManager: React.FC<UserManagerProps> = ({
     setTimeout(() => setCopiedToken(null), 2000);
   };
 
+  const handleCopyUuid = (uuid: string, userId: string) => {
+    navigator.clipboard.writeText(uuid);
+    setCopiedUuid(userId);
+    setTimeout(() => setCopiedUuid(null), 2000);
+  };
+
+  const handleResetUserWithNewUuid = (user: UserAccount) => {
+    const newUuid = generateRandomUuid();
+    const newTrojanPass = `Pass_${Math.random().toString(36).substring(2, 8)}`;
+    const confirmMsg = lang === 'fa'
+      ? `آیا از تغییر UUID کاربر «${user.username}» مطمئن هستید؟ با این کار کانکشن‌های قدیمی قطع شده و کلاینت باید ساب‌اسکریپشن را آپدیت کند.`
+      : `Regenerate UUID for user "${user.username}"? Old connections will drop until they update their subscription.`;
+
+    if (!confirm(confirmMsg)) return;
+
+    if (onResetUserUuid) {
+      onResetUserUuid({
+        ...user,
+        uuid: newUuid,
+        trojanPassword: newTrojanPass,
+      });
+    } else {
+      onSaveUser({
+        ...user,
+        uuid: newUuid,
+        trojanPassword: newTrojanPass,
+      });
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const generatedUuid = formUser.uuid || generateRandomUuid();
+    const generatedTrojanPass = formUser.trojanPassword || `Pass_${Math.random().toString(36).substring(2, 8)}`;
+
     const userToSave: UserAccount = {
       id: formUser.id || `usr-${Date.now()}`,
       username: formUser.username || `user_${Date.now().toString().slice(-4)}`,
       email: formUser.email || '',
       token: formUser.token || `sub_${Math.random().toString(36).substring(2, 8)}`,
+      uuid: generatedUuid,
+      trojanPassword: generatedTrojanPass,
       quotaGB: Number(formUser.quotaGB) || 30,
       usedUploadBytes: formUser.usedUploadBytes || 0,
       usedDownloadBytes: formUser.usedDownloadBytes || 0,
@@ -94,6 +153,8 @@ export const UserManager: React.FC<UserManagerProps> = ({
       username: '',
       email: '',
       token: '',
+      uuid: '',
+      trojanPassword: '',
       quotaGB: 30,
       expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       active: true,
@@ -110,12 +171,12 @@ export const UserManager: React.FC<UserManagerProps> = ({
         <div>
           <h2 className="text-2xl font-serif font-light text-white flex items-center gap-2.5">
             <Users className="h-5 w-5 text-[#c5a47e]" />
-            <span>{lang === 'fa' ? 'کاربران و لینک‌های اختصاصی ساب‌اسکریپشن' : 'User Accounts & Subscriptions'}</span>
+            <span>{lang === 'fa' ? 'کاربران و شناسه‌های احراز هویت (UUID)' : 'User Accounts & Authentication UUIDs'}</span>
           </h2>
           <p className="text-xs text-gray-500 mt-1">
             {lang === 'fa' 
-              ? 'مدیریت ترافیک مصرفی، تاریخ انقضا و تولید لینک‌های ساب‌اسکریپشن اختصاصی مهسا آن‌جی' 
-              : 'Manage individual user bandwidth limits, validity periods, and custom MahsaNG subscriptions'}
+              ? 'احراز هویت VLESS مستقیماً با UUID هر کاربر در این بخش بررسی می‌شود. برای اتصال، کلاینت باید UUID همینجا را داشته باشد.' 
+              : 'VLESS proxy authenticates against each user UUID. Subscriptions distribute these dedicated credentials.'}
           </p>
         </div>
 
@@ -123,6 +184,8 @@ export const UserManager: React.FC<UserManagerProps> = ({
           id="btn-open-add-user"
           onClick={() => {
             handleGenerateToken();
+            handleGenerateUuid();
+            handleGenerateTrojanPassword();
             setShowAddModal(true);
           }}
           className="flex items-center gap-2 rounded-lg bg-[#c5a47e] px-4 py-2.5 text-xs font-semibold text-black shadow-lg shadow-[#c5a47e]/20 hover:bg-[#b3936d] transition-all"
@@ -142,6 +205,7 @@ export const UserManager: React.FC<UserManagerProps> = ({
           const daysLeft = Math.max(0, Math.ceil((new Date(user.expireAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
           const subUrl = `${origin}/sub/${user.token}`;
           const isCopied = copiedToken === user.id;
+          const isUuidCopied = copiedUuid === user.id;
 
           return (
             <div
@@ -196,6 +260,35 @@ export const UserManager: React.FC<UserManagerProps> = ({
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
+                  </div>
+                </div>
+
+                {/* Dedicated UUID Badge & One-Click Copy */}
+                <div className="rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] p-2.5 space-y-1.5 font-mono text-xs">
+                  <div className="flex items-center justify-between text-[10px] text-gray-400 uppercase tracking-wider">
+                    <span className="flex items-center gap-1 text-[#c5a47e]">
+                      <Fingerprint className="h-3 w-3" />
+                      <span>{lang === 'fa' ? 'شناسه احراز هویت VLESS (UUID):' : 'VLESS Auth UUID:'}</span>
+                    </span>
+                    <button
+                      onClick={() => handleCopyUuid(user.uuid || '', user.id)}
+                      className="hover:text-white flex items-center gap-1 text-[10px]"
+                    >
+                      {isUuidCopied ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-400" />
+                          <span className="text-emerald-400">{lang === 'fa' ? 'کپی شد' : 'Copied'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3" />
+                          <span>{lang === 'fa' ? 'کپی UUID' : 'Copy UUID'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="text-gray-200 select-all truncate text-[11px] bg-[#141414] p-1.5 rounded border border-[#222222]">
+                    {user.uuid || '— بدون UUID —'}
                   </div>
                 </div>
 
@@ -270,19 +363,33 @@ export const UserManager: React.FC<UserManagerProps> = ({
                 </div>
 
                 {/* Footer Utilities */}
-                <div className="flex items-center justify-between border-t border-[#1e1e1e] pt-2 text-xs">
-                  <button
-                    onClick={() => onResetTraffic(user.id)}
-                    className="flex items-center gap-1 text-gray-500 hover:text-[#c5a47e] transition-colors text-[11px]"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    <span>{lang === 'fa' ? 'صفر کردن ترافیک مصرفی' : 'Reset Traffic'}</span>
-                  </button>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#1e1e1e] pt-2 text-xs">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => onResetTraffic(user.id)}
+                      className="flex items-center gap-1 text-gray-500 hover:text-[#c5a47e] transition-colors text-[11px]"
+                      title="Reset bandwidth"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      <span>{lang === 'fa' ? 'صفر کردن ترافیک' : 'Reset Traffic'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleResetUserWithNewUuid(user)}
+                      className="flex items-center gap-1 text-rose-400 hover:text-rose-300 transition-colors text-[11px]"
+                      title={lang === 'fa' ? 'تولید UUID نو و قطع اتصالات قدیمی' : 'Regenerate UUID and invalidate old one'}
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      <span>{lang === 'fa' ? 'بازنشانی با UUID جدید' : 'New UUID'}</span>
+                    </button>
+                  </div>
 
                   <button
                     onClick={() => {
                       setFormUser({
                         ...user,
+                        uuid: user.uuid || generateRandomUuid(),
+                        trojanPassword: user.trojanPassword || `Pass_${Math.random().toString(36).substring(2, 8)}`,
                         expireAt: new Date(user.expireAt).toISOString().split('T')[0]
                       });
                       setShowAddModal(true);
@@ -314,7 +421,7 @@ export const UserManager: React.FC<UserManagerProps> = ({
                     {formUser.id ? (lang === 'fa' ? 'ویرایش کاربر' : 'Edit User') : (lang === 'fa' ? 'تعریف کاربر جدید' : 'Create User')}
                   </h3>
                   <p className="text-xs text-gray-500">
-                    {lang === 'fa' ? 'تنظیم حجم، تاریخ انقضا و توکن اشتراک' : 'Set quota, validity and subscription token'}
+                    {lang === 'fa' ? 'تنظیم UUID اختصاصی VLESS، پسورد تروجان و توکن اشتراک' : 'Set dedicated VLESS UUID, Trojan password and quota'}
                   </p>
                 </div>
               </div>
@@ -326,7 +433,7 @@ export const UserManager: React.FC<UserManagerProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
               
               <div>
                 <label className="text-xs font-medium text-gray-300 block mb-1.5">
@@ -339,6 +446,62 @@ export const UserManager: React.FC<UserManagerProps> = ({
                   onChange={(e) => setFormUser(prev => ({ ...prev, username: e.target.value }))}
                   placeholder="مثال: family_member"
                   className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-white outline-none focus:border-[#c5a47e]"
+                />
+              </div>
+
+              {/* VLESS UUID Input & Generator */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium text-[#c5a47e] flex items-center gap-1.5">
+                    <Fingerprint className="h-3.5 w-3.5" />
+                    <span>{lang === 'fa' ? 'شناسه احراز هویت اختصاصی VLESS (UUID):' : 'Dedicated VLESS UUID:'}</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateUuid}
+                    className="text-[11px] text-[#c5a47e] hover:text-[#b3936d] flex items-center gap-1 font-medium"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>{lang === 'fa' ? 'تولید UUID تصادفی' : 'Generate UUID'}</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={formUser.uuid || ''}
+                  onChange={(e) => setFormUser(prev => ({ ...prev, uuid: e.target.value }))}
+                  placeholder="xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+                  className="w-full rounded-lg border border-[#333333] bg-[#0a0a0a] px-3 py-2 text-xs text-emerald-400 font-mono outline-none focus:border-[#c5a47e]"
+                />
+                <span className="text-[10px] text-gray-500 block mt-1">
+                  {lang === 'fa' 
+                    ? '⚠️ سرور VLESS فقط اتصالاتی که با این UUID درخواست بدهند را تایید می‌کند.' 
+                    : 'The server verifies incoming VLESS handshakes against this exact UUID.'}
+                </span>
+              </div>
+
+              {/* Trojan Password Input & Generator */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium text-gray-300 flex items-center gap-1.5">
+                    <Lock className="h-3.5 w-3.5 text-purple-400" />
+                    <span>{lang === 'fa' ? 'رمز عبور اختصاصی تروجان (Trojan Password):' : 'Trojan Password:'}</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateTrojanPassword}
+                    className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
+                  >
+                    <Key className="h-3 w-3" />
+                    <span>{lang === 'fa' ? 'تولید رمز' : 'Generate Pass'}</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={formUser.trojanPassword || ''}
+                  onChange={(e) => setFormUser(prev => ({ ...prev, trojanPassword: e.target.value }))}
+                  className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-purple-300 font-mono outline-none focus:border-purple-400"
                 />
               </div>
 
@@ -382,7 +545,7 @@ export const UserManager: React.FC<UserManagerProps> = ({
                     className="text-[11px] text-[#c5a47e] hover:text-[#b3936d] flex items-center gap-1 font-medium"
                   >
                     <Key className="h-3 w-3" />
-                    {lang === 'fa' ? 'تولید توکن رندوم' : 'Random Token'}
+                    <span>{lang === 'fa' ? 'تولید توکن رندوم' : 'Random Token'}</span>
                   </button>
                 </div>
                 <input

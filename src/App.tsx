@@ -285,6 +285,12 @@ export default function App() {
     }
   };
 
+  const handleResetUserUuid = async (updatedUser: UserAccount) => {
+    await handleSaveUser(updatedUser);
+    // Also synchronize configs that had user's old UUID or default configs
+    fetchAllData();
+  };
+
   // --- Clean IP Actions ---
   const handleSaveCleanIp = async (newIp: CleanIpEntry) => {
     const isEdit = cleanIps.some(ip => ip.id === newIp.id);
@@ -454,6 +460,7 @@ export default function App() {
             {activeTab === 'configs' && (
               <ConfigManager
                 configs={configs}
+                users={users}
                 cleanIps={cleanIps}
                 onSaveConfig={handleSaveConfig}
                 onDeleteConfig={handleDeleteConfig}
@@ -481,6 +488,7 @@ export default function App() {
                 onDeleteUser={handleDeleteUser}
                 onResetTraffic={handleResetUserTraffic}
                 onToggleUser={handleToggleUser}
+                onResetUserUuid={handleResetUserUuid}
                 onOpenSubModal={handleOpenUserSub}
                 lang={lang}
                 appUrl={appUrl}

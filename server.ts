@@ -120,7 +120,10 @@ const defaultCleanIps: CleanIpEntry[] = [
   }
 ];
 
-// Initial default Proxy configs
+// Initial default Proxy configs with freshly generated non-leaked credentials
+const initialVlessUuid = crypto.randomUUID();
+const initialTrojanPass = `Pass_${crypto.randomBytes(6).toString('hex')}`;
+
 const defaultConfigs: ProxyConfig[] = [
   {
     id: 'cfg-vless-ws-1',
@@ -128,7 +131,7 @@ const defaultConfigs: ProxyConfig[] = [
     protocol: 'vless',
     server: 'my-app.wasmer.app',
     port: 443,
-    uuid: 'e7b1a23c-4d5e-6f7a-8b9c-0d1e2f3a4b5c',
+    uuid: initialVlessUuid,
     transport: 'ws',
     path: '/vless-ws',
     host: 'my-app.wasmer.app',
@@ -137,6 +140,10 @@ const defaultConfigs: ProxyConfig[] = [
     remark: '⚡ Wasmer VLESS WS-TLS 🇮🇷 MCI',
     operatorPreset: 'mci',
     cleanIp: '104.16.132.229',
+    fragment: true,
+    fragmentLength: '10-50',
+    fragmentInterval: '20-50',
+    fragmentPackets: 'tlshello',
     active: true,
     createdAt: new Date().toISOString(),
   },
@@ -146,7 +153,7 @@ const defaultConfigs: ProxyConfig[] = [
     protocol: 'trojan',
     server: 'my-app.wasmer.app',
     port: 443,
-    password: 'WasmerPass_2026_SecureKey',
+    password: initialTrojanPass,
     transport: 'ws',
     path: '/trojan-ws',
     host: 'my-app.wasmer.app',
@@ -164,7 +171,7 @@ const defaultConfigs: ProxyConfig[] = [
     protocol: 'vless',
     server: '185.199.110.153',
     port: 443,
-    uuid: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+    uuid: initialVlessUuid,
     transport: 'tcp',
     security: 'reality',
     realityPublicKey: 'Iq5dE8Z7yL4k-9Nm1xW3vP6qR8sT0uV2wX4yZ6aB8cD',
@@ -185,7 +192,7 @@ const defaultConfigs: ProxyConfig[] = [
     server: 'my-app.wasmer.app',
     port: 8080,
     username: 'rayuser',
-    password: 'securePass7788',
+    password: `pass_${crypto.randomBytes(4).toString('hex')}`,
     transport: 'tcp',
     security: 'none',
     remark: '🌐 HTTP Auth Proxy',
@@ -200,35 +207,18 @@ const defaultUsers: UserAccount[] = [
     id: 'usr-admin-1',
     username: 'soshiant_vip',
     email: 'soshiant@example.com',
-    token: 'sub_vip_soshiant_998877',
-    uuid: 'e7b1a23c-4d5e-6f7a-8b9c-0d1e2f3a4b5c',
-    trojanPassword: 'WasmerPass_2026_SecureKey',
+    token: `sub_${crypto.randomBytes(6).toString('hex')}`,
+    uuid: initialVlessUuid,
+    trojanPassword: initialTrojanPass,
     quotaGB: 60,
-    usedUploadBytes: 1024 * 1024 * 480, // 480 MB
-    usedDownloadBytes: 1024 * 1024 * 1024 * 9.2, // 9.2 GB
+    usedUploadBytes: 0,
+    usedDownloadBytes: 0,
     expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     active: true,
     allowedConfigs: ['all'],
-    notes: 'اکانت نامحدود VIP مهسا آن‌جی',
+    notes: 'اکانت اختصاصی VIP مهسا آن‌جی',
     createdAt: new Date().toISOString(),
     lastConnectedAt: new Date().toISOString(),
-  },
-  {
-    id: 'usr-daily-2',
-    username: 'family_daily',
-    email: 'family@example.com',
-    token: 'sub_family_daily_334455',
-    uuid: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
-    trojanPassword: 'FamilyPass2026',
-    quotaGB: 30,
-    usedUploadBytes: 1024 * 1024 * 140,
-    usedDownloadBytes: 1024 * 1024 * 1024 * 4.1,
-    expireAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
-    active: true,
-    allowedConfigs: ['cfg-vless-ws-1', 'cfg-trojan-ws-2'],
-    notes: 'کاربر خانواده - تست همراه اول و ایرانسل',
-    createdAt: new Date().toISOString(),
-    lastConnectedAt: new Date(Date.now() - 3600 * 1000 * 3).toISOString(),
   }
 ];
 
@@ -273,6 +263,27 @@ function loadDatabase() {
           ...parsed,
           cleanIps: Array.isArray(parsed.cleanIps) && parsed.cleanIps.length > 0 ? parsed.cleanIps : defaultCleanIps
         };
+
+        // Security scrub: if database still contains the leaked static UUID e7b1a23c, replace it with fresh UUID
+        let needsScrubSave = false;
+        const leakedUuid = 'e7b1a23c-4d5e-6f7a-8b9c-0d1e2f3a4b5c';
+        db.users.forEach(u => {
+          if (u.uuid && u.uuid.toLowerCase() === leakedUuid.toLowerCase()) {
+            u.uuid = initialVlessUuid;
+            needsScrubSave = true;
+          }
+        });
+        db.configs.forEach(c => {
+          if (c.uuid && c.uuid.toLowerCase() === leakedUuid.toLowerCase()) {
+            c.uuid = initialVlessUuid;
+            needsScrubSave = true;
+          }
+        });
+
+        if (needsScrubSave) {
+          saveDatabase(true);
+        }
+
         console.log('✅ Durable database loaded successfully.');
       }
     } else {
