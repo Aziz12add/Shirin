@@ -308,7 +308,17 @@ function saveDatabase(force = false) {
   try {
     isSaving = true;
     db.settings.lastSynced = new Date().toISOString();
-    const jsonStr = JSON.stringify(db, null, 2);
+
+    // Cap traffic array to max 100 recent entries to avoid memory/JSON blowup on Wasmer
+    if (Array.isArray(db.traffic) && db.traffic.length > 100) {
+      db.traffic = db.traffic.slice(-100);
+    }
+
+    // In production, write compact JSON (no 2-space pretty print) to minimize string allocation and OOM
+    const jsonStr = process.env.NODE_ENV === 'production' 
+      ? JSON.stringify(db) 
+      : JSON.stringify(db, null, 2);
+
     const tmpFile = `${DB_FILE}.tmp.${Date.now()}`;
     
     // Atomic write
@@ -327,12 +337,12 @@ function saveDatabase(force = false) {
 
 loadDatabase();
 
-// Periodically persist database changes every 30 seconds if dirty
+// Periodically persist database changes every 60 seconds if dirty
 setInterval(() => {
   if (isDbDirty) {
     saveDatabase();
   }
-}, 30 * 1000);
+}, 60 * 1000);
 
 // Periodically create lightweight backup every 1 hour (single latest file to avoid disk/memory exhaustion)
 setInterval(() => {
@@ -380,6 +390,48 @@ let lastRejectedVlessLog = 0;
 let rejectedTrojanCount = 0;
 let lastRejectedTrojanLog = 0;
 
+// Scanner IP Rate-Limiter: blocks IPs with > 10 invalid attempts per 60 seconds
+const suspiciousIps = new Map<string, { count: number; firstSeen: number }>();
+
+function getClientIp(req: http.IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function isIpRateLimited(ip: string): boolean {
+  if (ip === 'unknown') return false;
+  const now = Date.now();
+  const entry = suspiciousIps.get(ip);
+  if (!entry) return false;
+
+  if (now - entry.firstSeen > 60000) {
+    suspiciousIps.delete(ip);
+    return false;
+  }
+  return entry.count >= 10;
+}
+
+function recordSuspiciousAttempt(ip: string) {
+  if (ip === 'unknown') return;
+  const now = Date.now();
+  const entry = suspiciousIps.get(ip);
+  if (!entry || now - entry.firstSeen > 60000) {
+    suspiciousIps.set(ip, { count: 1, firstSeen: now });
+  } else {
+    entry.count++;
+  }
+
+  // Periodic cleanup of suspicious IPs map to prevent memory leak
+  if (suspiciousIps.size > 200) {
+    for (const [k, v] of suspiciousIps.entries()) {
+      if (now - v.firstSeen > 60000) suspiciousIps.delete(k);
+    }
+  }
+}
+
 function reportUnauthorizedVless() {
   rejectedVlessCount++;
   const now = Date.now();
@@ -402,12 +454,16 @@ function reportUnauthorizedTrojan() {
 
 // Parse VLESS packet and proxy to destination
 function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
-  liveConnectionsCount++;
-  totalConnectionsServed++;
+  const clientIp = getClientIp(req);
+  if (isIpRateLimited(clientIp)) {
+    try { ws.close(4003, 'Rate limited'); } catch (e) {}
+    return;
+  }
 
   let user: UserAccount | null = null;
   let targetSocket: net.Socket | null = null;
   let isHandshakeComplete = false;
+  let isAuthenticatedConnection = false;
 
   ws.on('message', (data: Buffer) => {
     if (!Buffer.isBuffer(data)) {
@@ -417,13 +473,15 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
     // Step 1: Handshake and Authentication
     if (!isHandshakeComplete) {
       if (data.length < 18) {
-        ws.close(1002, 'VLESS: Packet too short');
+        recordSuspiciousAttempt(clientIp);
+        try { ws.close(1002, 'VLESS: Packet too short'); } catch (e) {}
         return;
       }
 
       const version = data[0];
       if (version !== 0) {
-        ws.close(1002, 'VLESS: Unsupported protocol version');
+        recordSuspiciousAttempt(clientIp);
+        try { ws.close(1002, 'VLESS: Unsupported protocol version'); } catch (e) {}
         return;
       }
 
@@ -434,13 +492,14 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       user = db.users.find(u => (u.uuid && u.uuid.toLowerCase() === clientUuid.toLowerCase()) || u.token === clientUuid) || null;
 
       if (!user) {
+        recordSuspiciousAttempt(clientIp);
         reportUnauthorizedVless();
-        ws.close(4003, 'Unauthorized');
+        try { ws.close(4003, 'Unauthorized'); } catch (e) {}
         return;
       }
 
       if (!user.active) {
-        ws.close(4003, 'User account suspended');
+        try { ws.close(4003, 'User account suspended'); } catch (e) {}
         return;
       }
 
@@ -449,8 +508,15 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       const maxAllowedBytes = user.quotaGB * 1024 * 1024 * 1024;
 
       if (isExpired || totalUsedBytes >= maxAllowedBytes) {
-        ws.close(4003, 'Traffic quota exceeded or expired');
+        try { ws.close(4003, 'Traffic quota exceeded or expired'); } catch (e) {}
         return;
+      }
+
+      // ONLY increment live connection count after legitimate user authentication succeeds!
+      if (!isAuthenticatedConnection) {
+        isAuthenticatedConnection = true;
+        liveConnectionsCount++;
+        totalConnectionsServed++;
       }
 
       user.lastConnectedAt = new Date().toISOString();
@@ -461,7 +527,7 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       const cursor = 18 + addonLength;
       
       if (data.length < cursor + 4) {
-        ws.close(1002, 'VLESS: Malformed command header');
+        try { ws.close(1002, 'VLESS: Malformed command header'); } catch (e) {}
         return;
       }
 
@@ -490,7 +556,7 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
         targetHost = ipv6Parts.join(':');
         addressLength = 16;
       } else {
-        ws.close(1002, 'VLESS: Unsupported address type');
+        try { ws.close(1002, 'VLESS: Unsupported address type'); } catch (e) {}
         return;
       }
 
@@ -500,7 +566,12 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       try {
         targetSocket = net.connect({ host: targetHost, port: targetPort }, () => {
           // VLESS Success response header: [version: 0x00, addon length: 0x00]
-          ws.send(Buffer.from([0x00, 0x00]));
+          try {
+            ws.send(Buffer.from([0x00, 0x00]));
+          } catch (e) {
+            targetSocket?.destroy();
+            return;
+          }
           isHandshakeComplete = true;
 
           // Forward initial payload if present
@@ -519,27 +590,31 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
         // Forward from target TCP socket to client WebSocket
         targetSocket.on('data', (chunk) => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(chunk);
-            const len = chunk.length;
-            realTotalDownloadBytes += len;
-            downloadBytesWindow += len;
-            if (user) {
-              user.usedDownloadBytes += len;
-              markDatabaseDirty();
+            try {
+              ws.send(chunk);
+              const len = chunk.length;
+              realTotalDownloadBytes += len;
+              downloadBytesWindow += len;
+              if (user) {
+                user.usedDownloadBytes += len;
+                markDatabaseDirty();
+              }
+            } catch (e) {
+              targetSocket?.destroy();
             }
           }
         });
 
-        targetSocket.on('error', (err) => {
-          ws.close();
+        targetSocket.on('error', () => {
+          try { ws.close(); } catch (e) {}
         });
 
         targetSocket.on('close', () => {
-          ws.close();
+          try { ws.close(); } catch (e) {}
         });
 
       } catch (err) {
-        ws.close();
+        try { ws.close(); } catch (e) {}
       }
 
       return;
@@ -559,13 +634,21 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
   });
 
   ws.on('close', () => {
-    liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+    // Only decrement if this connection was authenticated and counted
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
   });
 
   ws.on('error', () => {
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
@@ -574,12 +657,16 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
 
 // Parse Trojan packet and proxy to destination
 function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
-  liveConnectionsCount++;
-  totalConnectionsServed++;
+  const clientIp = getClientIp(req);
+  if (isIpRateLimited(clientIp)) {
+    try { ws.close(4003, 'Rate limited'); } catch (e) {}
+    return;
+  }
 
   let user: UserAccount | null = null;
   let targetSocket: net.Socket | null = null;
   let isHandshakeComplete = false;
+  let isAuthenticatedConnection = false;
 
   ws.on('message', (data: Buffer) => {
     if (!Buffer.isBuffer(data)) {
@@ -588,7 +675,8 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
 
     if (!isHandshakeComplete) {
       if (data.length < 58) {
-        ws.close(1002, 'Trojan: Packet too short');
+        recordSuspiciousAttempt(clientIp);
+        try { ws.close(1002, 'Trojan: Packet too short'); } catch (e) {}
         return;
       }
 
@@ -603,13 +691,14 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       }) || null;
 
       if (!user) {
+        recordSuspiciousAttempt(clientIp);
         reportUnauthorizedTrojan();
-        ws.close(4003, 'Unauthorized');
+        try { ws.close(4003, 'Unauthorized'); } catch (e) {}
         return;
       }
 
       if (!user.active) {
-        ws.close(4003, 'User account suspended');
+        try { ws.close(4003, 'User account suspended'); } catch (e) {}
         return;
       }
 
@@ -618,8 +707,15 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       const maxAllowedBytes = user.quotaGB * 1024 * 1024 * 1024;
 
       if (isExpired || totalUsedBytes >= maxAllowedBytes) {
-        ws.close(4003, 'Traffic quota exceeded');
+        try { ws.close(4003, 'Traffic quota exceeded'); } catch (e) {}
         return;
+      }
+
+      // ONLY increment live connection count after legitimate user authentication succeeds!
+      if (!isAuthenticatedConnection) {
+        isAuthenticatedConnection = true;
+        liveConnectionsCount++;
+        totalConnectionsServed++;
       }
 
       user.lastConnectedAt = new Date().toISOString();
@@ -641,7 +737,7 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
         targetHost = data.toString('utf8', cursor + 1, cursor + 1 + domainLen);
         cursor += 1 + domainLen;
       } else {
-        ws.close(1002, 'Trojan: Unsupported address type');
+        try { ws.close(1002, 'Trojan: Unsupported address type'); } catch (e) {}
         return;
       }
 
@@ -669,21 +765,31 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
 
         targetSocket.on('data', (chunk) => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(chunk);
-            const len = chunk.length;
-            realTotalDownloadBytes += len;
-            downloadBytesWindow += len;
-            if (user) {
-              user.usedDownloadBytes += len;
-              markDatabaseDirty();
+            try {
+              ws.send(chunk);
+              const len = chunk.length;
+              realTotalDownloadBytes += len;
+              downloadBytesWindow += len;
+              if (user) {
+                user.usedDownloadBytes += len;
+                markDatabaseDirty();
+              }
+            } catch (e) {
+              targetSocket?.destroy();
             }
           }
         });
 
-        targetSocket.on('error', () => ws.close());
-        targetSocket.on('close', () => ws.close());
+        targetSocket.on('error', () => {
+          try { ws.close(); } catch (e) {}
+        });
+
+        targetSocket.on('close', () => {
+          try { ws.close(); } catch (e) {}
+        });
+
       } catch (err) {
-        ws.close();
+        try { ws.close(); } catch (e) {}
       }
 
       return;
@@ -702,13 +808,21 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
   });
 
   ws.on('close', () => {
-    liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+    // Only decrement if this connection was authenticated and counted
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
   });
 
   ws.on('error', () => {
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.destroy();
     }
@@ -1089,6 +1203,20 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Catch HTTP protocol errors and malformed requests from scanners to prevent process crash
+  server.on('clientError', (err: any, socket: net.Socket) => {
+    // 400 Bad Request or close socket directly
+    if (socket.writable) {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    } else {
+      socket.destroy();
+    }
+  });
+
+  server.on('error', (err: any) => {
+    console.error('Server error swallowed:', err?.message || err);
+  });
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Shirin / RayPanel Server running on http://0.0.0.0:${PORT}`);
