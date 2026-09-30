@@ -4,7 +4,7 @@ config = node_config(
     schema = 1,
 
     commands = {
-        "start": "node dist/server.cjs",
+        "start": "node dist/server/server.cjs",
     },
 
     node_version = "24",

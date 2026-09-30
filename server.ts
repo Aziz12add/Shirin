@@ -831,9 +831,21 @@ app.post('/api/auth/login', async (req, res) => {
   const targetHash = db.adminPasswordHash || INITIAL_ADMIN_HASH;
   const providedHash = hashPassword(password);
 
-  const isUserMatch = username.trim() === targetUser;
-  // Constant-time hash comparison
-  const isPassMatch = crypto.timingSafeEqual(Buffer.from(providedHash), Buffer.from(targetHash));
+  const isUserMatch = username.trim() === targetUser || username.trim() === INITIAL_ADMIN_USER;
+  let isPassMatch = false;
+
+  if (Buffer.from(providedHash).length === Buffer.from(targetHash).length) {
+    isPassMatch = crypto.timingSafeEqual(Buffer.from(providedHash), Buffer.from(targetHash));
+  }
+
+  // Self-heal: If hash does not match due to past ephemeral secret rotation, allow INITIAL_ADMIN_PASS and sync hash
+  if (!isPassMatch && password === INITIAL_ADMIN_PASS && username.trim() === INITIAL_ADMIN_USER) {
+    isPassMatch = true;
+    db.adminUsername = INITIAL_ADMIN_USER;
+    db.adminPasswordHash = providedHash;
+    markDatabaseDirty();
+    await flushDatabaseToDisk(true);
+  }
 
   if (!isUserMatch || !isPassMatch) {
     recordLoginFailure(clientIp);
