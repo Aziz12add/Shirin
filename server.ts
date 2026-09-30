@@ -463,6 +463,21 @@ function reportUnauthorizedTrojan() {
   }
 }
 
+function isMemoryExhausted(): boolean {
+  // If memory usage exceeds ~420MB on Wasmer/Edge, reject or drop high-throughput speedtests before crashing
+  try {
+    const mem = process.memoryUsage();
+    if (mem.rss > 420 * 1024 * 1024 || mem.heapUsed > 350 * 1024 * 1024) {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Low highWaterMark for Wasmer constrained environment
+const PROXY_HIGH_WATER_MARK = 64 * 1024; // 64KB
+const MAX_WS_BUFFERED_AMOUNT = 256 * 1024; // 256KB cap on WebSocket pending writes
+
 // Parse VLESS packet and proxy to destination
 function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
   const clientIp = getClientIp(req);
@@ -471,10 +486,38 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
     return;
   }
 
+  if (isMemoryExhausted()) {
+    try { ws.close(1013, 'Server memory constrained'); } catch (e) {}
+    return;
+  }
+
   let user: UserAccount | null = null;
   let targetSocket: net.Socket | null = null;
   let isHandshakeComplete = false;
   let isAuthenticatedConnection = false;
+  let isCleaningUp = false;
+
+  const cleanupConnection = () => {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
+
+    if (targetSocket) {
+      try {
+        targetSocket.removeAllListeners();
+        targetSocket.destroy();
+      } catch (e) {}
+      targetSocket = null;
+    }
+
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      try { ws.close(); } catch (e) {}
+    }
+  };
 
   ws.on('message', (data: Buffer) => {
     if (!Buffer.isBuffer(data)) {
@@ -573,21 +616,35 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
 
       const initialPayload = data.subarray(cursor + 4 + addressLength);
 
-      // Establish target TCP connection
+      // Establish target TCP connection with limited highWaterMark (64KB)
       try {
-        targetSocket = net.connect({ host: targetHost, port: targetPort }, () => {
-          // VLESS Success response header: [version: 0x00, addon length: 0x00]
+        const socket = new net.Socket();
+        (socket as any).writableHighWaterMark = PROXY_HIGH_WATER_MARK;
+        (socket as any).readableHighWaterMark = PROXY_HIGH_WATER_MARK;
+        targetSocket = socket;
+
+        // Drain event handles backpressure when socket flushes its buffer
+        socket.on('drain', () => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.resume(); } catch (e) {}
+          }
+        });
+
+        socket.connect({ host: targetHost, port: targetPort }, () => {
           try {
             ws.send(Buffer.from([0x00, 0x00]));
           } catch (e) {
-            targetSocket?.destroy();
+            cleanupConnection();
             return;
           }
           isHandshakeComplete = true;
 
           // Forward initial payload if present
-          if (initialPayload.length > 0 && targetSocket) {
-            targetSocket.write(initialPayload);
+          if (initialPayload.length > 0 && !socket.destroyed) {
+            const flushed = socket.write(initialPayload);
+            if (!flushed) {
+              try { ws.pause(); } catch (e) {}
+            }
             const len = initialPayload.length;
             realTotalUploadBytes += len;
             uploadBytesWindow += len;
@@ -598,42 +655,70 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
         });
 
-        // Forward from target TCP socket to client WebSocket
-        targetSocket.on('data', (chunk) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            try {
-              ws.send(chunk);
-              const len = chunk.length;
-              realTotalDownloadBytes += len;
-              downloadBytesWindow += len;
-              if (user) {
-                user.usedDownloadBytes += len;
-                markDatabaseDirty();
+        // Forward from target TCP socket to client WebSocket with backpressure
+        socket.on('data', (chunk) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+
+          // Safety check: if memory is exhausted, abort connection cleanly instead of crashing
+          if (isMemoryExhausted()) {
+            cleanupConnection();
+            return;
+          }
+
+          // Backpressure check: if WebSocket internal outgoing buffer exceeds 256KB, pause target socket
+          if (ws.bufferedAmount > MAX_WS_BUFFERED_AMOUNT) {
+            socket.pause();
+            // Check after small delay or wait until WebSocket clears
+            const resumeCheck = setInterval(() => {
+              if (ws.readyState !== WebSocket.OPEN || socket.destroyed) {
+                clearInterval(resumeCheck);
+                return;
               }
-            } catch (e) {
-              targetSocket?.destroy();
+              if (ws.bufferedAmount <= PROXY_HIGH_WATER_MARK) {
+                clearInterval(resumeCheck);
+                try { socket.resume(); } catch (e) {}
+              }
+            }, 20);
+          }
+
+          try {
+            // ws.send directly with chunk (no extra Buffer.from copy)
+            ws.send(chunk);
+            const len = chunk.length;
+            realTotalDownloadBytes += len;
+            downloadBytesWindow += len;
+            if (user) {
+              user.usedDownloadBytes += len;
+              markDatabaseDirty();
             }
+          } catch (e) {
+            cleanupConnection();
           }
         });
 
-        targetSocket.on('error', () => {
-          try { ws.close(); } catch (e) {}
-        });
-
-        targetSocket.on('close', () => {
-          try { ws.close(); } catch (e) {}
-        });
+        socket.on('error', cleanupConnection);
+        socket.on('close', cleanupConnection);
 
       } catch (err) {
-        try { ws.close(); } catch (e) {}
+        cleanupConnection();
       }
 
       return;
     }
 
-    // Step 2: Streaming data forwarding from WebSocket to Target TCP
+    // Step 2: Streaming data forwarding from WebSocket to Target TCP with backpressure
     if (isHandshakeComplete && targetSocket && !targetSocket.destroyed) {
-      targetSocket.write(data);
+      if (isMemoryExhausted()) {
+        cleanupConnection();
+        return;
+      }
+
+      const flushed = targetSocket.write(data);
+      // If TCP socket buffer is full (flushed === false), pause incoming WS frames until 'drain'
+      if (!flushed) {
+        try { ws.pause(); } catch (e) {}
+      }
+
       const len = data.length;
       realTotalUploadBytes += len;
       uploadBytesWindow += len;
@@ -644,26 +729,8 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
     }
   });
 
-  ws.on('close', () => {
-    // Only decrement if this connection was authenticated and counted
-    if (isAuthenticatedConnection) {
-      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
-      isAuthenticatedConnection = false;
-    }
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
-  });
-
-  ws.on('error', () => {
-    if (isAuthenticatedConnection) {
-      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
-      isAuthenticatedConnection = false;
-    }
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
-  });
+  ws.on('close', cleanupConnection);
+  ws.on('error', cleanupConnection);
 }
 
 // Parse Trojan packet and proxy to destination
@@ -674,10 +741,38 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
     return;
   }
 
+  if (isMemoryExhausted()) {
+    try { ws.close(1013, 'Server memory constrained'); } catch (e) {}
+    return;
+  }
+
   let user: UserAccount | null = null;
   let targetSocket: net.Socket | null = null;
   let isHandshakeComplete = false;
   let isAuthenticatedConnection = false;
+  let isCleaningUp = false;
+
+  const cleanupConnection = () => {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+
+    if (isAuthenticatedConnection) {
+      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
+      isAuthenticatedConnection = false;
+    }
+
+    if (targetSocket) {
+      try {
+        targetSocket.removeAllListeners();
+        targetSocket.destroy();
+      } catch (e) {}
+      targetSocket = null;
+    }
+
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      try { ws.close(); } catch (e) {}
+    }
+  };
 
   ws.on('message', (data: Buffer) => {
     if (!Buffer.isBuffer(data)) {
@@ -733,7 +828,6 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       markDatabaseDirty();
 
       // Parse target address
-      // Bytes 56, 57 are \r\n
       const command = data[58]; // 0x01 = CONNECT
       const addressType = data[59];
 
@@ -760,10 +854,24 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       const initialPayload = data.subarray(cursor);
 
       try {
-        targetSocket = net.connect({ host: targetHost, port: targetPort }, () => {
+        const socket = new net.Socket();
+        (socket as any).writableHighWaterMark = PROXY_HIGH_WATER_MARK;
+        (socket as any).readableHighWaterMark = PROXY_HIGH_WATER_MARK;
+        targetSocket = socket;
+
+        socket.on('drain', () => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.resume(); } catch (e) {}
+          }
+        });
+
+        socket.connect({ host: targetHost, port: targetPort }, () => {
           isHandshakeComplete = true;
-          if (initialPayload.length > 0 && targetSocket) {
-            targetSocket.write(initialPayload);
+          if (initialPayload.length > 0 && !socket.destroyed) {
+            const flushed = socket.write(initialPayload);
+            if (!flushed) {
+              try { ws.pause(); } catch (e) {}
+            }
             const len = initialPayload.length;
             realTotalUploadBytes += len;
             uploadBytesWindow += len;
@@ -774,40 +882,64 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
         });
 
-        targetSocket.on('data', (chunk) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            try {
-              ws.send(chunk);
-              const len = chunk.length;
-              realTotalDownloadBytes += len;
-              downloadBytesWindow += len;
-              if (user) {
-                user.usedDownloadBytes += len;
-                markDatabaseDirty();
+        // Forward from target TCP socket to client WebSocket with backpressure
+        socket.on('data', (chunk) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+
+          if (isMemoryExhausted()) {
+            cleanupConnection();
+            return;
+          }
+
+          if (ws.bufferedAmount > MAX_WS_BUFFERED_AMOUNT) {
+            socket.pause();
+            const resumeCheck = setInterval(() => {
+              if (ws.readyState !== WebSocket.OPEN || socket.destroyed) {
+                clearInterval(resumeCheck);
+                return;
               }
-            } catch (e) {
-              targetSocket?.destroy();
+              if (ws.bufferedAmount <= PROXY_HIGH_WATER_MARK) {
+                clearInterval(resumeCheck);
+                try { socket.resume(); } catch (e) {}
+              }
+            }, 20);
+          }
+
+          try {
+            ws.send(chunk);
+            const len = chunk.length;
+            realTotalDownloadBytes += len;
+            downloadBytesWindow += len;
+            if (user) {
+              user.usedDownloadBytes += len;
+              markDatabaseDirty();
             }
+          } catch (e) {
+            cleanupConnection();
           }
         });
 
-        targetSocket.on('error', () => {
-          try { ws.close(); } catch (e) {}
-        });
-
-        targetSocket.on('close', () => {
-          try { ws.close(); } catch (e) {}
-        });
+        socket.on('error', cleanupConnection);
+        socket.on('close', cleanupConnection);
 
       } catch (err) {
-        try { ws.close(); } catch (e) {}
+        cleanupConnection();
       }
 
       return;
     }
 
     if (isHandshakeComplete && targetSocket && !targetSocket.destroyed) {
-      targetSocket.write(data);
+      if (isMemoryExhausted()) {
+        cleanupConnection();
+        return;
+      }
+
+      const flushed = targetSocket.write(data);
+      if (!flushed) {
+        try { ws.pause(); } catch (e) {}
+      }
+
       const len = data.length;
       realTotalUploadBytes += len;
       uploadBytesWindow += len;
@@ -818,30 +950,16 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
     }
   });
 
-  ws.on('close', () => {
-    // Only decrement if this connection was authenticated and counted
-    if (isAuthenticatedConnection) {
-      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
-      isAuthenticatedConnection = false;
-    }
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
-  });
-
-  ws.on('error', () => {
-    if (isAuthenticatedConnection) {
-      liveConnectionsCount = Math.max(0, liveConnectionsCount - 1);
-      isAuthenticatedConnection = false;
-    }
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
-  });
+  ws.on('close', cleanupConnection);
+  ws.on('error', cleanupConnection);
 }
 
-// WebSocket Server Router
-const wss = new WebSocketServer({ noServer: true });
+// WebSocket Server Router with perMessageDeflate disabled to save memory on Wasmer
+const wss = new WebSocketServer({ 
+  noServer: true,
+  maxPayload: 256 * 1024, // 256KB max per WS message frame
+  perMessageDeflate: false, // avoids zlib memory allocation spikes
+});
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.split('?')[0] : '';
