@@ -18,6 +18,14 @@ import {
   generateConfigUri, 
   generateUserPersonalizedConfigs 
 } from './src/utils/configParsers';
+import {
+  PersistentStorageSchema,
+  PersistenceAdapter,
+  JsonFilePersistenceAdapter,
+  PostgresPersistenceAdapter,
+  defaultInitialCleanIps,
+  createSeedData
+} from './src/db/persistence';
 
 const app = express();
 const server = http.createServer(app);
@@ -25,355 +33,149 @@ const server = http.createServer(app);
 // Dynamic Port (Wasmer: 8080 or custom, Railway: PORT, Local: 3000)
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-// Admin Credentials from Environment or Defaults
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-let ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-
-// Active admin sessions tokens
-const activeSessions = new Map<string, { username: string; expiresAt: number }>();
-
-app.use(express.json());
-
-// ==========================================
-// 1. DURABLE DATABASE & BACKUP SYSTEM
-// ==========================================
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'database.json');
-const DB_BACKUP_FILE = path.join(DATA_DIR, 'database.bak.json');
-const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
-
+// Security & Secret key management
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-if (!fs.existsSync(BACKUPS_DIR)) {
-  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-}
 
-// Initial default Clean IPs for Iranian Operators
-const defaultCleanIps: CleanIpEntry[] = [
-  {
-    id: 'cip-mci-1',
-    ip: '104.16.132.229',
-    operator: 'mci',
-    name: 'MCI Cloudflare Anycast 1',
-    ispNameFa: 'همراه اول (تهران / شیراز)',
-    pingMs: 42,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'پینگ عالی و پایدار روی همراه اول'
-  },
-  {
-    id: 'cip-mci-2',
-    ip: '162.159.192.1',
-    operator: 'mci',
-    name: 'MCI Cloudflare Subnet 162',
-    ispNameFa: 'همراه اول (کل کشور)',
-    pingMs: 48,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'تست شده بدون پکت لاس'
-  },
-  {
-    id: 'cip-irancell-1',
-    ip: '162.159.136.232',
-    operator: 'irancell',
-    name: 'MTN Irancell Fast IP 1',
-    ispNameFa: 'ایرانسل (LTE / 5G)',
-    pingMs: 38,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'سرعت دانلود بالا روی دکل‌های ایرانسل'
-  },
-  {
-    id: 'cip-irancell-2',
-    ip: '104.17.209.9',
-    operator: 'irancell',
-    name: 'MTN Irancell CDN IP 2',
-    ispNameFa: 'ایرانسل (مشهد / تبریز)',
-    pingMs: 45,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'بسیار پایدار برای وب‌سوکت'
-  },
-  {
-    id: 'cip-rightel-1',
-    ip: '104.21.48.1',
-    operator: 'rightel',
-    name: 'Rightel Optimized IP',
-    ispNameFa: 'رایتل (3G / 4G)',
-    pingMs: 55,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'مناسب اینترنت رایتل'
-  },
-  {
-    id: 'cip-fixed-1',
-    ip: '104.19.154.241',
-    operator: 'fixed',
-    name: 'Fixed Line (Shatel / Mokhaberat)',
-    ispNameFa: 'شاتل / مخابرات / آسیاتک',
-    pingMs: 34,
-    active: true,
-    addedAt: new Date().toISOString(),
-    notes: 'تست شده روی ADSL و فیبر نوری تانوما'
+// Fixed or durable session secret: never generate random volatile secret on each restart in production
+function getOrInitDurableSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
+    return process.env.SESSION_SECRET.trim();
   }
-];
-
-// Initial default Proxy configs with freshly generated non-leaked credentials
-const initialVlessUuid = crypto.randomUUID();
-const initialTrojanPass = `Pass_${crypto.randomBytes(6).toString('hex')}`;
-
-const defaultConfigs: ProxyConfig[] = [
-  {
-    id: 'cfg-vless-ws-1',
-    name: 'Wasmer VLESS-WS (همراه اول / MCI)',
-    protocol: 'vless',
-    server: 'my-app.wasmer.app',
-    port: 443,
-    uuid: initialVlessUuid,
-    transport: 'ws',
-    path: '/vless-ws',
-    host: 'my-app.wasmer.app',
-    sni: 'my-app.wasmer.app',
-    security: 'tls',
-    remark: '⚡ Wasmer VLESS WS-TLS 🇮🇷 MCI',
-    operatorPreset: 'mci',
-    cleanIp: '104.16.132.229',
-    fragment: true,
-    fragmentLength: '10-50',
-    fragmentInterval: '20-50',
-    fragmentPackets: 'tlshello',
-    active: true,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: 'cfg-trojan-ws-2',
-    name: 'Wasmer Trojan-WS (ایرانسل / Irancell)',
-    protocol: 'trojan',
-    server: 'my-app.wasmer.app',
-    port: 443,
-    password: initialTrojanPass,
-    transport: 'ws',
-    path: '/trojan-ws',
-    host: 'my-app.wasmer.app',
-    sni: 'my-app.wasmer.app',
-    security: 'tls',
-    remark: '🚀 Wasmer Trojan WS-TLS 🇮🇷 Irancell',
-    operatorPreset: 'irancell',
-    cleanIp: '162.159.136.232',
-    active: true,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: 'cfg-vless-reality-3',
-    name: 'VLESS Reality TCP Vision (ضد فیلتر)',
-    protocol: 'vless',
-    server: '185.199.110.153',
-    port: 443,
-    uuid: initialVlessUuid,
-    transport: 'tcp',
-    security: 'reality',
-    realityPublicKey: 'Iq5dE8Z7yL4k-9Nm1xW3vP6qR8sT0uV2wX4yZ6aB8cD',
-    realityShortId: '6ba7b810',
-    spiderX: '/',
-    flow: 'xtls-rprx-vision',
-    sni: 'www.microsoft.com',
-    remark: '🔒 VLESS Reality TCP ⚡ Anti-Filter',
-    operatorPreset: 'all',
-    cleanIp: '104.16.132.229',
-    active: true,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: 'cfg-http-proxy-4',
-    name: 'HTTP Secure Proxy (Auth)',
-    protocol: 'http',
-    server: 'my-app.wasmer.app',
-    port: 8080,
-    username: 'rayuser',
-    password: `pass_${crypto.randomBytes(4).toString('hex')}`,
-    transport: 'tcp',
-    security: 'none',
-    remark: '🌐 HTTP Auth Proxy',
-    operatorPreset: 'mokhaberat',
-    active: true,
-    createdAt: new Date().toISOString(),
-  }
-];
-
-const defaultUsers: UserAccount[] = [
-  {
-    id: 'usr-admin-1',
-    username: 'soshiant_vip',
-    email: 'soshiant@example.com',
-    token: `sub_${crypto.randomBytes(6).toString('hex')}`,
-    uuid: initialVlessUuid,
-    trojanPassword: initialTrojanPass,
-    quotaGB: 60,
-    usedUploadBytes: 0,
-    usedDownloadBytes: 0,
-    expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    active: true,
-    allowedConfigs: ['all'],
-    notes: 'اکانت اختصاصی VIP مهسا آن‌جی',
-    createdAt: new Date().toISOString(),
-    lastConnectedAt: new Date().toISOString(),
-  }
-];
-
-interface DatabaseSchema {
-  configs: ProxyConfig[];
-  users: UserAccount[];
-  cleanIps: CleanIpEntry[];
-  traffic: TrafficRecord[];
-  settings: DatabaseSettings;
-  adminPasswordHash?: string;
-}
-
-let db: DatabaseSchema = {
-  configs: defaultConfigs,
-  users: defaultUsers,
-  cleanIps: defaultCleanIps,
-  traffic: [],
-  settings: {
-    type: 'local_json',
-    autoBackup: true,
-    lastBackupAt: new Date().toISOString(),
-    status: 'connected',
-    lastSynced: new Date().toISOString(),
-    adminUsername: ADMIN_USER
-  }
-};
-
-// Hash password helper
-function hashPassword(pass: string): string {
-  return crypto.createHash('sha256').update(pass + SESSION_SECRET).digest('hex');
-}
-
-// Load database from disk
-function loadDatabase() {
+  const secretFile = path.join(DATA_DIR, '.session_secret');
   try {
-    if (fs.existsSync(DB_FILE)) {
-      const data = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (parsed.configs && Array.isArray(parsed.configs)) {
-        db = {
-          ...db,
-          ...parsed,
-          cleanIps: Array.isArray(parsed.cleanIps) && parsed.cleanIps.length > 0 ? parsed.cleanIps : defaultCleanIps
-        };
-
-        // Security scrub: if database still contains the leaked static UUID e7b1a23c, replace it with fresh UUID
-        let needsScrubSave = false;
-        const leakedUuid = 'e7b1a23c-4d5e-6f7a-8b9c-0d1e2f3a4b5c';
-        db.users.forEach(u => {
-          if (u.uuid && u.uuid.toLowerCase() === leakedUuid.toLowerCase()) {
-            u.uuid = initialVlessUuid;
-            needsScrubSave = true;
-          }
-        });
-        db.configs.forEach(c => {
-          if (c.uuid && c.uuid.toLowerCase() === leakedUuid.toLowerCase()) {
-            c.uuid = initialVlessUuid;
-            needsScrubSave = true;
-          }
-        });
-
-        if (needsScrubSave) {
-          saveDatabase(true);
-        }
-
-        console.log('✅ Durable database loaded successfully.');
-      }
-    } else {
-      saveDatabase();
+    if (fs.existsSync(secretFile)) {
+      const saved = fs.readFileSync(secretFile, 'utf-8').trim();
+      if (saved.length >= 16) return saved;
     }
-  } catch (err) {
-    console.error('⚠️ Error reading primary database, checking backup...', err);
-    try {
-      if (fs.existsSync(DB_BACKUP_FILE)) {
-        const backupData = fs.readFileSync(DB_BACKUP_FILE, 'utf-8');
-        db = JSON.parse(backupData);
-        console.log('✅ Restored from backup successfully.');
-      }
-    } catch (bErr) {
-      console.error('Failed to load backup:', bErr);
+    const generated = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(secretFile, generated, 'utf-8');
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('⚠️ WARNING: SESSION_SECRET env var not set. Generated durable secret at data/.session_secret');
     }
+    return generated;
+  } catch (e) {
+    return 'shirin_durable_fallback_secret_key_prod_2026';
   }
 }
 
-// Durable Database dirty flag & throttling state
-let isDbDirty = false;
-let isSaving = false;
+const SESSION_SECRET = getOrInitDurableSecret();
 
-function markDatabaseDirty() {
+// Password hashing with HMAC-SHA256
+export function hashPassword(pass: string): string {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(pass).digest('hex');
+}
+
+// Initial Admin Credentials (only used if database doesn't already have an admin password)
+const INITIAL_ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const INITIAL_ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
+const INITIAL_ADMIN_HASH = hashPassword(INITIAL_ADMIN_PASS);
+
+if (process.env.NODE_ENV === 'production' && (!process.env.ADMIN_PASS || process.env.ADMIN_PASS === 'admin123')) {
+  console.warn('⚠️ SECURITY WARNING: ADMIN_PASS is using default value in production. Please set a strong ADMIN_PASS.');
+}
+
+// Login Rate Limiter (Max 5 attempts per 60s per IP)
+const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
+function isLoginRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry) return false;
+  if (now - entry.firstAttempt > 60000) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= 5;
+}
+function recordLoginFailure(ip: string) {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now - entry.firstAttempt > 60000) {
+    loginAttempts.set(ip, { count: 1, firstAttempt: now });
+  } else {
+    entry.count++;
+  }
+}
+function clearLoginAttempts(ip: string) {
+  loginAttempts.delete(ip);
+}
+
+app.use(express.json({ limit: '5mb' }));
+
+// ==========================================
+// 1. DATABASE & PERSISTENCE ADAPTER SELECTION
+// ==========================================
+let persistence: PersistenceAdapter;
+const postgresUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+
+if (postgresUrl && (postgresUrl.startsWith('postgres://') || postgresUrl.startsWith('postgresql://'))) {
+  console.log('🐘 Initializing PostgreSQL managed persistence adapter...');
+  persistence = new PostgresPersistenceAdapter(postgresUrl, INITIAL_ADMIN_USER, INITIAL_ADMIN_HASH);
+} else {
+  console.log('📁 Initializing Atomic JSON file persistence adapter in:', DATA_DIR);
+  persistence = new JsonFilePersistenceAdapter(DATA_DIR, INITIAL_ADMIN_USER, INITIAL_ADMIN_HASH);
+}
+
+// In-Memory Synchronized State (Always backed by persistence)
+let db: PersistentStorageSchema = createSeedData(INITIAL_ADMIN_USER, INITIAL_ADMIN_HASH);
+
+// Process state tracking
+let isDatabaseReady = false;
+let isDbDirty = false;
+let isShuttingDown = false;
+
+export function markDatabaseDirty() {
   isDbDirty = true;
 }
 
-// Atomic & Durable save with throttling
-function saveDatabase(force = false) {
-  if (!isDbDirty && !force) return;
-  if (isSaving) return;
-
+// Initialize database
+export async function initializeDatabase(): Promise<void> {
   try {
-    isSaving = true;
-    db.settings.lastSynced = new Date().toISOString();
-
-    // Cap traffic array to max 100 recent entries to avoid memory/JSON blowup on Wasmer
-    if (Array.isArray(db.traffic) && db.traffic.length > 100) {
-      db.traffic = db.traffic.slice(-100);
-    }
-
-    // In production, write compact JSON (no 2-space pretty print) to minimize string allocation and OOM
-    const jsonStr = process.env.NODE_ENV === 'production' 
-      ? JSON.stringify(db) 
-      : JSON.stringify(db, null, 2);
-
-    const tmpFile = `${DB_FILE}.tmp.${Date.now()}`;
-    
-    // Atomic write
-    fs.writeFileSync(tmpFile, jsonStr, 'utf-8');
-    fs.renameSync(tmpFile, DB_FILE);
-
-    // Keep active backup
-    fs.writeFileSync(DB_BACKUP_FILE, jsonStr, 'utf-8');
+    await persistence.init();
+    db = await persistence.load();
+    isDatabaseReady = true;
     isDbDirty = false;
+    console.log(`✅ Database ready. Loaded ${db.configs.length} configs and ${db.users.length} users.`);
   } catch (err: any) {
-    console.error('❌ Error saving database:', err?.message || err);
-  } finally {
-    isSaving = false;
+    console.error('❌ Failed to initialize database:', err?.message || err);
+    // Do not crash startup so readiness probe can communicate state clearly
+    isDatabaseReady = false;
   }
 }
 
-loadDatabase();
+// Sync database state to durable storage
+export async function flushDatabaseToDisk(force = false): Promise<boolean> {
+  if (!persistence.isReady()) return false;
+  if (!isDbDirty && !force) return true;
 
-// Periodically persist database changes every 60 seconds if dirty
-setInterval(() => {
-  if (isDbDirty) {
-    saveDatabase();
-  }
-}, 60 * 1000);
-
-// Periodically create lightweight backup every 1 hour (single latest file to avoid disk/memory exhaustion)
-setInterval(() => {
   try {
-    if (fs.existsSync(DB_FILE)) {
-      fs.copyFileSync(DB_FILE, path.join(BACKUPS_DIR, 'latest-backup.json'));
-      db.settings.lastBackupAt = new Date().toISOString();
+    const success = await persistence.save(db, force);
+    if (success) {
+      isDbDirty = false;
     }
-  } catch (err) {
-    // ignore background backup error
+    return success;
+  } catch (err: any) {
+    console.error('❌ Error flushing database:', err?.message || err);
+    return false;
   }
-}, 60 * 60 * 1000);
+}
+
+// Periodic flush every 30 seconds if dirty
+setInterval(() => {
+  if (isDbDirty && isDatabaseReady) {
+    flushDatabaseToDisk();
+  }
+}, 30 * 1000);
 
 // ==========================================
 // 2. EMBEDDED REAL PROXY SERVER ENGINE
 // ==========================================
 let liveConnectionsCount = 0;
 let totalConnectionsServed = 0;
-let realTotalUploadBytes = 0;
-let realTotalDownloadBytes = 0;
+let sessionUploadBytes = 0;
+let sessionDownloadBytes = 0;
 
 // Speed meters (bytes transferred in the last 2 seconds)
 let uploadBytesWindow = 0;
@@ -401,7 +203,6 @@ let lastRejectedVlessLog = 0;
 let rejectedTrojanCount = 0;
 let lastRejectedTrojanLog = 0;
 
-// Scanner IP Rate-Limiter: blocks IPs with > 10 invalid attempts per 60 seconds
 const suspiciousIps = new Map<string, { count: number; firstSeen: number }>();
 
 function getClientIp(req: http.IncomingMessage): string {
@@ -434,8 +235,6 @@ function recordSuspiciousAttempt(ip: string) {
   } else {
     entry.count++;
   }
-
-  // Periodic cleanup of suspicious IPs map to prevent memory leak
   if (suspiciousIps.size > 200) {
     for (const [k, v] of suspiciousIps.entries()) {
       if (now - v.firstSeen > 60000) suspiciousIps.delete(k);
@@ -464,7 +263,6 @@ function reportUnauthorizedTrojan() {
 }
 
 function isMemoryExhausted(): boolean {
-  // If memory usage exceeds ~420MB on Wasmer/Edge, reject or drop high-throughput speedtests before crashing
   try {
     const mem = process.memoryUsage();
     if (mem.rss > 420 * 1024 * 1024 || mem.heapUsed > 350 * 1024 * 1024) {
@@ -486,8 +284,8 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
     return;
   }
 
-  if (isMemoryExhausted()) {
-    try { ws.close(1013, 'Server memory constrained'); } catch (e) {}
+  if (isMemoryExhausted() || !isDatabaseReady) {
+    try { ws.close(1013, 'Server busy or initializing'); } catch (e) {}
     return;
   }
 
@@ -566,7 +364,6 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
         return;
       }
 
-      // ONLY increment live connection count after legitimate user authentication succeeds!
       if (!isAuthenticatedConnection) {
         isAuthenticatedConnection = true;
         liveConnectionsCount++;
@@ -593,16 +390,13 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       let addressLength = 0;
 
       if (addressType === 0x01) {
-        // IPv4 (4 bytes)
         targetHost = data.subarray(cursor + 4, cursor + 8).join('.');
         addressLength = 4;
       } else if (addressType === 0x02) {
-        // Domain Name (1 byte length + string)
         const domainLen = data[cursor + 4];
         targetHost = data.toString('utf8', cursor + 5, cursor + 5 + domainLen);
         addressLength = 1 + domainLen;
       } else if (addressType === 0x03) {
-        // IPv6 (16 bytes)
         const ipv6Parts: string[] = [];
         for (let i = 0; i < 16; i += 2) {
           ipv6Parts.push(data.readUInt16BE(cursor + 4 + i).toString(16));
@@ -616,14 +410,12 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
 
       const initialPayload = data.subarray(cursor + 4 + addressLength);
 
-      // Establish target TCP connection with limited highWaterMark (64KB)
       try {
         const socket = new net.Socket();
         (socket as any).writableHighWaterMark = PROXY_HIGH_WATER_MARK;
         (socket as any).readableHighWaterMark = PROXY_HIGH_WATER_MARK;
         targetSocket = socket;
 
-        // Drain event handles backpressure when socket flushes its buffer
         socket.on('drain', () => {
           if (ws.readyState === WebSocket.OPEN) {
             try { ws.resume(); } catch (e) {}
@@ -639,15 +431,15 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
           isHandshakeComplete = true;
 
-          // Forward initial payload if present
           if (initialPayload.length > 0 && !socket.destroyed) {
             const flushed = socket.write(initialPayload);
             if (!flushed) {
               try { ws.pause(); } catch (e) {}
             }
             const len = initialPayload.length;
-            realTotalUploadBytes += len;
+            sessionUploadBytes += len;
             uploadBytesWindow += len;
+            db.lifetimeUploadBytes = (db.lifetimeUploadBytes || 0) + len;
             if (user) {
               user.usedUploadBytes += len;
               markDatabaseDirty();
@@ -655,20 +447,16 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
         });
 
-        // Forward from target TCP socket to client WebSocket with backpressure
         socket.on('data', (chunk) => {
           if (ws.readyState !== WebSocket.OPEN) return;
 
-          // Safety check: if memory is exhausted, abort connection cleanly instead of crashing
           if (isMemoryExhausted()) {
             cleanupConnection();
             return;
           }
 
-          // Backpressure check: if WebSocket internal outgoing buffer exceeds 256KB, pause target socket
           if (ws.bufferedAmount > MAX_WS_BUFFERED_AMOUNT) {
             socket.pause();
-            // Check after small delay or wait until WebSocket clears
             const resumeCheck = setInterval(() => {
               if (ws.readyState !== WebSocket.OPEN || socket.destroyed) {
                 clearInterval(resumeCheck);
@@ -682,11 +470,11 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
 
           try {
-            // ws.send directly with chunk (no extra Buffer.from copy)
             ws.send(chunk);
             const len = chunk.length;
-            realTotalDownloadBytes += len;
+            sessionDownloadBytes += len;
             downloadBytesWindow += len;
+            db.lifetimeDownloadBytes = (db.lifetimeDownloadBytes || 0) + len;
             if (user) {
               user.usedDownloadBytes += len;
               markDatabaseDirty();
@@ -706,7 +494,7 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       return;
     }
 
-    // Step 2: Streaming data forwarding from WebSocket to Target TCP with backpressure
+    // Step 2: Streaming data forwarding with backpressure
     if (isHandshakeComplete && targetSocket && !targetSocket.destroyed) {
       if (isMemoryExhausted()) {
         cleanupConnection();
@@ -714,14 +502,14 @@ function handleVlessConnection(ws: WebSocket, req: http.IncomingMessage) {
       }
 
       const flushed = targetSocket.write(data);
-      // If TCP socket buffer is full (flushed === false), pause incoming WS frames until 'drain'
       if (!flushed) {
         try { ws.pause(); } catch (e) {}
       }
 
       const len = data.length;
-      realTotalUploadBytes += len;
+      sessionUploadBytes += len;
       uploadBytesWindow += len;
+      db.lifetimeUploadBytes = (db.lifetimeUploadBytes || 0) + len;
       if (user) {
         user.usedUploadBytes += len;
         markDatabaseDirty();
@@ -741,8 +529,8 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
     return;
   }
 
-  if (isMemoryExhausted()) {
-    try { ws.close(1013, 'Server memory constrained'); } catch (e) {}
+  if (isMemoryExhausted() || !isDatabaseReady) {
+    try { ws.close(1013, 'Server busy or initializing'); } catch (e) {}
     return;
   }
 
@@ -786,10 +574,8 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
         return;
       }
 
-      // Trojan password hash is 56 hex chars (SHA224)
       const clientHexHash = data.toString('ascii', 0, 56);
 
-      // Match user by comparing SHA224 of trojanPassword or token
       user = db.users.find(u => {
         const pass = u.trojanPassword || u.token;
         const expectedHash = crypto.createHash('sha224').update(pass).digest('hex');
@@ -817,7 +603,6 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
         return;
       }
 
-      // ONLY increment live connection count after legitimate user authentication succeeds!
       if (!isAuthenticatedConnection) {
         isAuthenticatedConnection = true;
         liveConnectionsCount++;
@@ -827,7 +612,6 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       user.lastConnectedAt = new Date().toISOString();
       markDatabaseDirty();
 
-      // Parse target address
       const command = data[58]; // 0x01 = CONNECT
       const addressType = data[59];
 
@@ -848,8 +632,7 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
 
       const targetPort = data.readUInt16BE(cursor);
       cursor += 2;
-      // Skip \r\n (2 bytes)
-      cursor += 2;
+      cursor += 2; // skip \r\n
 
       const initialPayload = data.subarray(cursor);
 
@@ -873,8 +656,9 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
               try { ws.pause(); } catch (e) {}
             }
             const len = initialPayload.length;
-            realTotalUploadBytes += len;
+            sessionUploadBytes += len;
             uploadBytesWindow += len;
+            db.lifetimeUploadBytes = (db.lifetimeUploadBytes || 0) + len;
             if (user) {
               user.usedUploadBytes += len;
               markDatabaseDirty();
@@ -882,7 +666,6 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
           }
         });
 
-        // Forward from target TCP socket to client WebSocket with backpressure
         socket.on('data', (chunk) => {
           if (ws.readyState !== WebSocket.OPEN) return;
 
@@ -908,8 +691,9 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
           try {
             ws.send(chunk);
             const len = chunk.length;
-            realTotalDownloadBytes += len;
+            sessionDownloadBytes += len;
             downloadBytesWindow += len;
+            db.lifetimeDownloadBytes = (db.lifetimeDownloadBytes || 0) + len;
             if (user) {
               user.usedDownloadBytes += len;
               markDatabaseDirty();
@@ -941,8 +725,9 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
       }
 
       const len = data.length;
-      realTotalUploadBytes += len;
+      sessionUploadBytes += len;
       uploadBytesWindow += len;
+      db.lifetimeUploadBytes = (db.lifetimeUploadBytes || 0) + len;
       if (user) {
         user.usedUploadBytes += len;
         markDatabaseDirty();
@@ -954,32 +739,59 @@ function handleTrojanConnection(ws: WebSocket, req: http.IncomingMessage) {
   ws.on('error', cleanupConnection);
 }
 
-// WebSocket Server Router with perMessageDeflate disabled to save memory on Wasmer
+// WebSocket Server Router with perMessageDeflate disabled
 const wss = new WebSocketServer({ 
   noServer: true,
-  maxPayload: 256 * 1024, // 256KB max per WS message frame
-  perMessageDeflate: false, // avoids zlib memory allocation spikes
+  maxPayload: 256 * 1024,
+  perMessageDeflate: false,
 });
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.split('?')[0] : '';
 
-  // VLESS endpoints
   if (pathname === '/vless-ws' || pathname === '/vless-wasmer' || pathname.startsWith('/vless')) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleVlessConnection(ws, request);
     });
-  }
-  // Trojan endpoints
-  else if (pathname === '/trojan-ws' || pathname === '/trojan-wasmer' || pathname.startsWith('/trojan')) {
+  } else if (pathname === '/trojan-ws' || pathname === '/trojan-wasmer' || pathname.startsWith('/trojan')) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleTrojanConnection(ws, request);
     });
+  } else {
+    socket.destroy();
   }
 });
 
 // ==========================================
-// 3. ADMIN AUTHENTICATION MIDDLEWARE
+// 3. HEALTH & READINESS ENDPOINTS (Liveness & Readiness Probes)
+// ==========================================
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/readyz', (req, res) => {
+  const storageInfo = persistence.getStats();
+  if (isDatabaseReady && persistence.isReady()) {
+    return res.status(200).json({
+      status: 'ready',
+      database: {
+        type: storageInfo.type,
+        connected: true,
+      }
+    });
+  }
+  return res.status(503).json({
+    status: 'unavailable',
+    database: {
+      type: storageInfo.type,
+      connected: false,
+    },
+    message: 'Database is initializing or temporarily unavailable.'
+  });
+});
+
+// ==========================================
+// 4. ADMIN AUTHENTICATION & SESSIONS
 // ==========================================
 function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
@@ -988,38 +800,60 @@ function requireAdminAuth(req: express.Request, res: express.Response, next: exp
   }
 
   const token = authHeader.split(' ')[1];
-  const session = activeSessions.get(token);
+  const session = db.sessions ? db.sessions[token] : null;
 
   if (!session || session.expiresAt < Date.now()) {
-    if (session) activeSessions.delete(token);
+    if (session && db.sessions) {
+      delete db.sessions[token];
+      markDatabaseDirty();
+    }
     return res.status(401).json({ success: false, error: 'Session expired or invalid' });
   }
 
-  // Extend session by 2 hours on active requests
-  session.expiresAt = Date.now() + 2 * 3600 * 1000;
+  // Extend session
+  session.expiresAt = Date.now() + 24 * 3600 * 1000;
+  markDatabaseDirty();
   next();
 }
 
-// Auth API Endpoints
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
+  const clientIp = getClientIp(req);
+  if (isLoginRateLimited(clientIp)) {
+    return res.status(429).json({ success: false, message: 'Too many login attempts. Please wait 1 minute.' });
+  }
+
   const { username, password } = req.body;
+  if (!username || typeof username !== 'string' || !password || typeof password !== 'string') {
+    return res.status(400).json({ success: false, message: 'Username and password required' });
+  }
 
-  const validUser = ADMIN_USER;
-  const isMatch = username === validUser && password === ADMIN_PASS;
+  const targetUser = db.adminUsername || INITIAL_ADMIN_USER;
+  const targetHash = db.adminPasswordHash || INITIAL_ADMIN_HASH;
+  const providedHash = hashPassword(password);
 
-  if (!isMatch) {
+  const isUserMatch = username.trim() === targetUser;
+  // Constant-time hash comparison
+  const isPassMatch = crypto.timingSafeEqual(Buffer.from(providedHash), Buffer.from(targetHash));
+
+  if (!isUserMatch || !isPassMatch) {
+    recordLoginFailure(clientIp);
     return res.status(401).json({ success: false, message: 'Invalid username or password' });
   }
 
-  const token = `adm_${crypto.randomBytes(24).toString('hex')}`;
+  clearLoginAttempts(clientIp);
+
+  const token = `adm_${crypto.randomBytes(32).toString('hex')}`;
   const expiresAt = Date.now() + 24 * 3600 * 1000; // 24 hours
 
-  activeSessions.set(token, { username, expiresAt });
+  if (!db.sessions) db.sessions = {};
+  db.sessions[token] = { username: targetUser, expiresAt };
+  markDatabaseDirty();
+  await flushDatabaseToDisk();
 
   res.json({
     success: true,
     token,
-    username,
+    username: targetUser,
     expiresAt: new Date(expiresAt).toISOString()
   });
 });
@@ -1028,7 +862,10 @@ app.post('/api/auth/logout', (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
-    activeSessions.delete(token);
+    if (db.sessions && db.sessions[token]) {
+      delete db.sessions[token];
+      markDatabaseDirty();
+    }
   }
   res.json({ success: true, message: 'Logged out' });
 });
@@ -1039,27 +876,35 @@ app.get('/api/auth/me', (req, res) => {
     return res.json({ authenticated: false });
   }
   const token = authHeader.split(' ')[1];
-  const session = activeSessions.get(token);
+  const session = db.sessions ? db.sessions[token] : null;
   if (!session || session.expiresAt < Date.now()) {
     return res.json({ authenticated: false });
   }
   res.json({ authenticated: true, username: session.username });
 });
 
-app.post('/api/auth/change-password', requireAdminAuth, (req, res) => {
+app.post('/api/auth/change-password', requireAdminAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
-  if (oldPassword !== ADMIN_PASS) {
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+  }
+
+  const currentHash = db.adminPasswordHash || INITIAL_ADMIN_HASH;
+  const providedOldHash = hashPassword(oldPassword || '');
+
+  if (!crypto.timingSafeEqual(Buffer.from(providedOldHash), Buffer.from(currentHash))) {
     return res.status(400).json({ success: false, message: 'Old password is incorrect' });
   }
-  if (!newPassword || newPassword.length < 5) {
-    return res.status(400).json({ success: false, message: 'Password must be at least 5 characters' });
-  }
-  ADMIN_PASS = newPassword;
-  res.json({ success: true, message: 'Password changed successfully' });
+
+  db.adminPasswordHash = hashPassword(newPassword);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
+
+  res.json({ success: true, message: 'Password changed and permanently persisted' });
 });
 
 // ==========================================
-// 4. SUBSCRIPTION ENDPOINT (MAHSANG / V2RAYNG)
+// 5. SUBSCRIPTION ENDPOINT (MAHSANG / V2RAYNG)
 // ==========================================
 app.get('/sub/:token', (req, res) => {
   const token = req.params.token;
@@ -1078,20 +923,17 @@ app.get('/sub/:token', (req, res) => {
   const maxBytes = user.quotaGB * 1024 * 1024 * 1024;
   const isQuotaExceeded = totalUsedBytes >= maxBytes;
 
-  // Auto-detect hostname from incoming request (supports Wasmer, Railway, or custom domains)
   const incomingHost = req.headers.host || 'my-app.wasmer.app';
   const cleanHost = incomingHost.split(':')[0];
 
-  // Personalize configs for this user
   const personalizedConfigs = generateUserPersonalizedConfigs(user, db.configs, cleanHost);
 
-  // Headers for MahsaNG / V2rayNG / Clash
   const expireTimestamp = Math.floor(new Date(user.expireAt).getTime() / 1000);
   res.setHeader(
     'Subscription-Userinfo',
     `upload=${user.usedUploadBytes}; download=${user.usedDownloadBytes}; total=${maxBytes}; expire=${expireTimestamp}`
   );
-  res.setHeader('Profile-Update-Interval', '6'); // Refresh every 6 hours
+  res.setHeader('Profile-Update-Interval', '6');
   res.setHeader('Profile-Title', `Shirin-RayPanel: ${user.username}`);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
@@ -1100,10 +942,10 @@ app.get('/sub/:token', (req, res) => {
     const alertConfig: ProxyConfig = {
       id: 'alert-expired-node',
       name: alertMsg,
-      protocol: 'http',
+      protocol: 'vless',
       server: '127.0.0.1',
-      port: 80,
-      transport: 'tcp',
+      port: 443,
+      transport: 'ws',
       security: 'none',
       remark: alertMsg,
       active: true,
@@ -1117,13 +959,12 @@ app.get('/sub/:token', (req, res) => {
     return res.send(personalizedConfigs.map(generateConfigUri).join('\n'));
   }
 
-  // Base64 Subscription string for MahsaNG
   const base64Sub = generateSubscriptionBase64(personalizedConfigs);
   res.send(base64Sub);
 });
 
 // ==========================================
-// 5. PROTECTED ADMIN MANAGEMENT APIS
+// 6. PROTECTED ADMIN MANAGEMENT APIS
 // ==========================================
 
 // --- Configs API ---
@@ -1131,30 +972,34 @@ app.get('/api/configs', requireAdminAuth, (req, res) => {
   res.json({ configs: db.configs });
 });
 
-app.post('/api/configs', requireAdminAuth, (req, res) => {
+app.post('/api/configs', requireAdminAuth, async (req, res) => {
   const newConfig: ProxyConfig = {
     ...req.body,
     id: req.body.id || `cfg-${Date.now()}`,
     createdAt: new Date().toISOString(),
   };
   db.configs.unshift(newConfig);
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, config: newConfig });
 });
 
-app.put('/api/configs/:id', requireAdminAuth, (req, res) => {
+app.put('/api/configs/:id', requireAdminAuth, async (req, res) => {
   const id = req.params.id;
   const index = db.configs.findIndex(c => c.id === id);
   if (index === -1) return res.status(404).json({ error: 'Config not found' });
 
   db.configs[index] = { ...db.configs[index], ...req.body };
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, config: db.configs[index] });
 });
 
-app.delete('/api/configs/:id', requireAdminAuth, (req, res) => {
-  db.configs = db.configs.filter(c => c.id !== req.params.id);
-  saveDatabase(true);
+app.delete('/api/configs/:id', requireAdminAuth, async (req, res) => {
+  const id = req.params.id;
+  db.configs = db.configs.filter(c => c.id !== id);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true });
 });
 
@@ -1163,89 +1008,57 @@ app.get('/api/users', requireAdminAuth, (req, res) => {
   res.json({ users: db.users });
 });
 
-app.post('/api/users', requireAdminAuth, (req, res) => {
-  const randomUuid = crypto.randomUUID();
-  const randomSubToken = `sub_${crypto.randomBytes(6).toString('hex')}`;
-  const randomPassword = `pass_${crypto.randomBytes(5).toString('hex')}`;
-
+app.post('/api/users', requireAdminAuth, async (req, res) => {
   const newUser: UserAccount = {
     ...req.body,
     id: req.body.id || `usr-${Date.now()}`,
-    uuid: req.body.uuid || randomUuid,
-    token: req.body.token || randomSubToken,
-    trojanPassword: req.body.trojanPassword || randomPassword,
+    token: req.body.token || `sub_${crypto.randomBytes(8).toString('hex')}`,
+    uuid: req.body.uuid || crypto.randomUUID(),
+    trojanPassword: req.body.trojanPassword || `Pass_${crypto.randomBytes(6).toString('hex')}`,
+    quotaGB: Number(req.body.quotaGB) || 30,
     usedUploadBytes: req.body.usedUploadBytes || 0,
     usedDownloadBytes: req.body.usedDownloadBytes || 0,
+    expireAt: req.body.expireAt || new Date(Date.now() + 30 * 86400000).toISOString(),
+    active: req.body.active !== undefined ? req.body.active : true,
+    allowedConfigs: req.body.allowedConfigs || ['all'],
     createdAt: new Date().toISOString(),
   };
+
   db.users.unshift(newUser);
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, user: newUser });
 });
 
-app.put('/api/users/:id', requireAdminAuth, (req, res) => {
+app.put('/api/users/:id', requireAdminAuth, async (req, res) => {
   const id = req.params.id;
   const index = db.users.findIndex(u => u.id === id);
   if (index === -1) return res.status(404).json({ error: 'User not found' });
 
   db.users[index] = { ...db.users[index], ...req.body };
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, user: db.users[index] });
 });
 
-app.delete('/api/users/:id', requireAdminAuth, (req, res) => {
-  db.users = db.users.filter(u => u.id !== req.params.id);
-  saveDatabase(true);
+app.delete('/api/users/:id', requireAdminAuth, async (req, res) => {
+  const id = req.params.id;
+  db.users = db.users.filter(u => u.id !== id);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true });
 });
 
-app.post('/api/users/:id/reset-traffic', requireAdminAuth, (req, res) => {
-  const user = db.users.find(u => u.id === req.params.id);
+app.post('/api/users/:id/reset-traffic', requireAdminAuth, async (req, res) => {
+  const id = req.params.id;
+  const user = db.users.find(u => u.id === id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.usedUploadBytes = 0;
   user.usedDownloadBytes = 0;
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, user });
-});
-
-app.post('/api/users/:id/inject-traffic', requireAdminAuth, (req, res) => {
-  const user = db.users.find(u => u.id === req.params.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const { uploadMB = 0, downloadMB = 0, configId } = req.body;
-  const upBytes = Math.round(Number(uploadMB) * 1024 * 1024);
-  const downBytes = Math.round(Number(downloadMB) * 1024 * 1024);
-
-  user.usedUploadBytes += upBytes;
-  user.usedDownloadBytes += downBytes;
-  user.lastConnectedAt = new Date().toISOString();
-
-  realTotalUploadBytes += upBytes;
-  realTotalDownloadBytes += downBytes;
-  uploadBytesWindow += upBytes;
-  downloadBytesWindow += downBytes;
-
-  // Record capped traffic entry
-  if (!Array.isArray(db.traffic)) db.traffic = [];
-  db.traffic.push({
-    id: `trf-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    timestamp: new Date().toISOString(),
-    userId: user.id,
-    configId: configId || 'manual',
-    uploadBytes: upBytes,
-    downloadBytes: downBytes
-  });
-  if (db.traffic.length > 100) {
-    db.traffic = db.traffic.slice(-100);
-  }
-
-  saveDatabase(true);
-  res.json({ 
-    success: true, 
-    user, 
-    injected: { uploadMB, downloadMB } 
-  });
 });
 
 // --- Clean IP API ---
@@ -1253,7 +1066,7 @@ app.get('/api/clean-ips', requireAdminAuth, (req, res) => {
   res.json({ cleanIps: db.cleanIps });
 });
 
-app.post('/api/clean-ips', requireAdminAuth, (req, res) => {
+app.post('/api/clean-ips', requireAdminAuth, async (req, res) => {
   const newIp: CleanIpEntry = {
     ...req.body,
     id: req.body.id || `cip-${Date.now()}`,
@@ -1261,21 +1074,24 @@ app.post('/api/clean-ips', requireAdminAuth, (req, res) => {
     active: req.body.active !== undefined ? req.body.active : true
   };
   db.cleanIps.unshift(newIp);
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, cleanIp: newIp });
 });
 
-app.put('/api/clean-ips/:id', requireAdminAuth, (req, res) => {
+app.put('/api/clean-ips/:id', requireAdminAuth, async (req, res) => {
   const index = db.cleanIps.findIndex(ip => ip.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'IP not found' });
   db.cleanIps[index] = { ...db.cleanIps[index], ...req.body };
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true, cleanIp: db.cleanIps[index] });
 });
 
-app.delete('/api/clean-ips/:id', requireAdminAuth, (req, res) => {
+app.delete('/api/clean-ips/:id', requireAdminAuth, async (req, res) => {
   db.cleanIps = db.cleanIps.filter(ip => ip.id !== req.params.id);
-  saveDatabase(true);
+  markDatabaseDirty();
+  await flushDatabaseToDisk(true);
   res.json({ success: true });
 });
 
@@ -1311,6 +1127,8 @@ app.get('/api/stats', requireAdminAuth, (req, res) => {
   const totalTrafficBytes = db.users.reduce((acc, u) => acc + (u.quotaGB * 1024 * 1024 * 1024), 0);
   const usedTrafficBytes = db.users.reduce((acc, u) => acc + u.usedUploadBytes + u.usedDownloadBytes, 0);
 
+  const totalLifetimeBytes = (db.lifetimeUploadBytes || 0) + (db.lifetimeDownloadBytes || 0);
+
   const stats: SystemStats = {
     totalConfigs: db.configs.length,
     activeConfigs: db.configs.filter(c => c.active).length,
@@ -1318,13 +1136,19 @@ app.get('/api/stats', requireAdminAuth, (req, res) => {
     activeUsers: db.users.filter(u => u.active).length,
     totalTrafficGB: Math.round((totalTrafficBytes / (1024 * 1024 * 1024)) * 10) / 10,
     usedTrafficGB: Math.round((usedTrafficBytes / (1024 * 1024 * 1024)) * 100) / 100,
-    todayTrafficMB: Math.round(((realTotalUploadBytes + realTotalDownloadBytes) / (1024 * 1024)) * 10) / 10,
+    todayTrafficMB: Math.round(((sessionUploadBytes + sessionDownloadBytes) / (1024 * 1024)) * 10) / 10,
+    sessionTrafficMB: Math.round(((sessionUploadBytes + sessionDownloadBytes) / (1024 * 1024)) * 10) / 10,
+    lifetimeTrafficGB: Math.round((totalLifetimeBytes / (1024 * 1024 * 1024)) * 100) / 100,
+    lifetimeUploadBytes: db.lifetimeUploadBytes || 0,
+    lifetimeDownloadBytes: db.lifetimeDownloadBytes || 0,
+    sessionUploadBytes,
+    sessionDownloadBytes,
     liveConnections: liveConnectionsCount,
     totalConnectionsServed,
     liveUploadSpeedBps,
     liveDownloadSpeedBps,
-    totalUploadBytes: realTotalUploadBytes,
-    totalDownloadBytes: realTotalDownloadBytes,
+    totalUploadBytes: db.lifetimeUploadBytes || sessionUploadBytes,
+    totalDownloadBytes: db.lifetimeDownloadBytes || sessionDownloadBytes,
   };
 
   res.json({ stats });
@@ -1332,21 +1156,26 @@ app.get('/api/stats', requireAdminAuth, (req, res) => {
 
 // --- Database Export / Import ---
 app.get('/api/database/export', requireAdminAuth, (req, res) => {
+  // Sanitize passwords/hashes from export for security
+  const safeExport = {
+    ...db,
+    adminPasswordHash: undefined,
+    sessions: undefined,
+  };
   res.setHeader('Content-Disposition', `attachment; filename=raypanel-database-${new Date().toISOString().slice(0, 10)}.json`);
   res.setHeader('Content-Type', 'application/json');
-  res.send(JSON.stringify(db, null, 2));
+  res.send(JSON.stringify(safeExport, null, 2));
 });
 
-app.post('/api/database/import', requireAdminAuth, (req, res) => {
+app.post('/api/database/import', requireAdminAuth, async (req, res) => {
   try {
     const imported = req.body;
     if (imported && Array.isArray(imported.configs) && Array.isArray(imported.users)) {
-      db = {
-        ...db,
-        ...imported,
-        cleanIps: Array.isArray(imported.cleanIps) ? imported.cleanIps : db.cleanIps,
-      };
-      saveDatabase(true);
+      db.configs = imported.configs;
+      db.users = imported.users;
+      if (Array.isArray(imported.cleanIps)) db.cleanIps = imported.cleanIps;
+      markDatabaseDirty();
+      await flushDatabaseToDisk(true);
       return res.json({ success: true, message: 'Database imported successfully' });
     }
     res.status(400).json({ success: false, message: 'Invalid database schema' });
@@ -1356,9 +1185,26 @@ app.post('/api/database/import', requireAdminAuth, (req, res) => {
 });
 
 // ==========================================
-// 6. FRONTEND SERVING (VITE SPA & PRODUCTION)
+// 7. FRONTEND SERVING & STRICT STATIC ISOLATION
 // ==========================================
+// Prevent public downloading of server bundles or private files
+app.use((req, res, next) => {
+  const normalizedPath = req.path.toLowerCase();
+  if (
+    normalizedPath.endsWith('.cjs') ||
+    normalizedPath.endsWith('.ts') ||
+    normalizedPath.includes('server') ||
+    normalizedPath.includes('.env') ||
+    normalizedPath.includes('database.json')
+  ) {
+    return res.status(403).json({ error: 'Access forbidden' });
+  }
+  next();
+});
+
 async function startServer() {
+  await initializeDatabase();
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -1367,16 +1213,28 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // In production, strictly serve static client assets from dist/client ONLY
+    const clientDistPath = path.join(process.cwd(), 'dist', 'client');
+    const fallbackDistPath = path.join(process.cwd(), 'dist');
+    const staticDir = fs.existsSync(clientDistPath) ? clientDistPath : fallbackDistPath;
+
+    app.use(express.static(staticDir, {
+      index: false,
+      dotfiles: 'ignore',
+    }));
+
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(staticDir, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send('Frontend bundle not built yet.');
+      }
     });
   }
 
-  // Catch HTTP protocol errors and malformed requests from scanners to prevent process crash
+  // Catch HTTP protocol errors from scanners
   server.on('clientError', (err: any, socket: net.Socket) => {
-    // 400 Bad Request or close socket directly
     if (socket.writable) {
       socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
     } else {
@@ -1395,4 +1253,61 @@ async function startServer() {
   });
 }
 
-startServer();
+// Graceful Shutdown Handler (SIGTERM & SIGINT)
+async function handleGracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
+
+  // 1. Flush database immediately
+  try {
+    await flushDatabaseToDisk(true);
+    console.log('💾 Database flushed to disk successfully.');
+  } catch (e) {
+    console.error('Failed to flush database during shutdown:', e);
+  }
+
+  // 2. Terminate WebSocket connections cleanly
+  try {
+    wss.clients.forEach(client => {
+      try {
+        client.close(1001, 'Server shutting down');
+      } catch (e) {}
+    });
+    wss.close();
+  } catch (e) {}
+
+  // 3. Close persistence connections
+  try {
+    await persistence.close();
+  } catch (e) {}
+
+  // 4. Close HTTP/TCP server
+  server.close(() => {
+    console.log('👋 Shirin server closed gracefully. Exiting.');
+    process.exit(0);
+  });
+
+  // Force exit if hanging
+  setTimeout(() => {
+    console.warn('⚠️ Force exit after timeout.');
+    process.exit(0);
+  }, 4000);
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
+
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
+
+export { 
+  app, 
+  server, 
+  db, 
+  wss, 
+  startServer, 
+  handleGracefulShutdown, 
+  persistence 
+};

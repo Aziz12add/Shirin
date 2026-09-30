@@ -201,9 +201,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span>VLESS & Trojan WS</span>
             </div>
-            {stats && (stats.liveDownloadSpeedBps > 0 || stats.liveUploadSpeedBps > 0) && (
-              <span className="font-mono text-[#c5a47e]">
-                ↓ {formatBytes(stats.liveDownloadSpeedBps)}/s
+            {stats && (
+              <span className="font-mono text-[#c5a47e] text-[10px]">
+                {stats.lifetimeTrafficGB ? `Σ ${stats.lifetimeTrafficGB} GB` : (stats.liveDownloadSpeedBps > 0 ? `↓ ${formatBytes(stats.liveDownloadSpeedBps)}/s` : '')}
               </span>
             )}
           </div>

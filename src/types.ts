@@ -24,6 +24,7 @@ export interface ProxyConfig {
   remark: string;
   operatorPreset?: 'all' | 'mci' | 'irancell' | 'rightel' | 'mokhaberat' | 'custom';
   cleanIp?: string;
+  useCleanIp?: boolean; // Explicit opt-in flag: if true, client connects to cleanIp; otherwise connects to server
   // Fragment anti-censorship parameters (supported by MahsaNG, V2rayNG, sing-box, Xray)
   fragment?: boolean;
   fragmentLength?: string; // e.g. "10-50" or "50-100"
@@ -74,6 +75,7 @@ export interface TrafficRecord {
 
 export interface DatabaseSettings {
   type: 'local_json' | 'sqlite' | 'postgres';
+  connectionString?: string;
   autoBackup: boolean;
   lastBackupAt?: string;
   status: 'connected' | 'disconnected' | 'syncing';
@@ -88,7 +90,13 @@ export interface SystemStats {
   activeUsers: number;
   totalTrafficGB: number;
   usedTrafficGB: number;
-  todayTrafficMB: number;
+  todayTrafficMB: number; // Process session traffic (legacy compat)
+  sessionTrafficMB: number; // Current process session traffic (volatile RAM)
+  lifetimeTrafficGB: number; // Total lifetime persisted bytes across crashes/restarts
+  lifetimeUploadBytes: number; // Persisted total upload bytes
+  lifetimeDownloadBytes: number; // Persisted total download bytes
+  sessionUploadBytes: number; // Session current upload bytes
+  sessionDownloadBytes: number; // Session current download bytes
   liveConnections: number;
   totalConnectionsServed: number;
   liveUploadSpeedBps: number;

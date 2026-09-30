@@ -3,9 +3,11 @@ import { ProxyConfig, UserAccount } from '../types';
 /**
  * Generate VLESS URI
  * Format: vless://uuid@server:port?type=ws&security=tls&path=...&sni=...&host=...#Remark
+ * If config.useCleanIp is explicitly true and cleanIp is present, destination host is cleanIp.
+ * Otherwise, host is config.server.
  */
 export function generateVlessUri(config: ProxyConfig): string {
-  const host = config.cleanIp || config.server;
+  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
   const port = config.port || 443;
   const uuid = config.uuid || '00000000-0000-0000-0000-000000000000';
   
@@ -14,10 +16,12 @@ export function generateVlessUri(config: ProxyConfig): string {
   params.set('security', config.security || 'tls');
   
   if (config.path) params.set('path', config.path);
-  if (config.sni || config.host || config.server) {
-    params.set('sni', config.sni || config.host || config.server);
+  // sni and host header should reflect domain (server), ensuring TLS handshake validity even when cleanIp is used
+  const domainHeader = config.host || config.sni || config.server;
+  if (domainHeader) {
+    params.set('sni', config.sni || domainHeader);
+    params.set('host', config.host || domainHeader);
   }
-  if (config.host) params.set('host', config.host);
   if (config.alpn) params.set('alpn', config.alpn);
   if (config.flow) params.set('flow', config.flow);
   
@@ -53,7 +57,7 @@ export function generateVlessUri(config: ProxyConfig): string {
  * Format: trojan://password@server:port?security=tls&type=ws&path=...&sni=...#Remark
  */
 export function generateTrojanUri(config: ProxyConfig): string {
-  const host = config.cleanIp || config.server;
+  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
   const port = config.port || 443;
   const password = encodeURIComponent(config.password || 'password123');
   
@@ -62,10 +66,11 @@ export function generateTrojanUri(config: ProxyConfig): string {
   params.set('type', config.transport || 'ws');
   
   if (config.path) params.set('path', config.path);
-  if (config.sni || config.host || config.server) {
-    params.set('sni', config.sni || config.host || config.server);
+  const domainHeader = config.host || config.sni || config.server;
+  if (domainHeader) {
+    params.set('sni', config.sni || domainHeader);
+    params.set('host', config.host || domainHeader);
   }
-  if (config.host) params.set('host', config.host);
   if (config.alpn) params.set('alpn', config.alpn);
 
   const remark = encodeURIComponent(config.remark || config.name || 'Trojan Node');
@@ -77,10 +82,11 @@ export function generateTrojanUri(config: ProxyConfig): string {
  * Format: vmess://<base64-json>
  */
 export function generateVmessUri(config: ProxyConfig): string {
+  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
   const vmessObj = {
     v: '2',
     ps: config.remark || config.name || 'VMess Node',
-    add: config.cleanIp || config.server,
+    add: host,
     port: String(config.port || 443),
     id: config.uuid || '00000000-0000-0000-0000-000000000000',
     aid: '0',
@@ -107,7 +113,7 @@ export function generateVmessUri(config: ProxyConfig): string {
  * Format: http://user:pass@server:port#Remark
  */
 export function generateHttpUri(config: ProxyConfig): string {
-  const host = config.cleanIp || config.server;
+  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
   const port = config.port || 8080;
   const auth = config.username && config.password 
     ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password)}@`
@@ -120,7 +126,7 @@ export function generateHttpUri(config: ProxyConfig): string {
  * Generate Shadowsocks URI
  */
 export function generateShadowsocksUri(config: ProxyConfig): string {
-  const host = config.cleanIp || config.server;
+  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
   const port = config.port || 8388;
   const method = 'aes-256-gcm';
   const password = config.password || 'password';
@@ -153,9 +159,17 @@ export function generateConfigUri(config: ProxyConfig): string {
 
 /**
  * Convert a list of configs to Base64 subscription string for MahsaNG / V2rayNG
+ * Only active nodes with implemented runtime protocols (VLESS and Trojan) are exported.
  */
 export function generateSubscriptionBase64(configs: ProxyConfig[]): string {
-  const uris = configs.filter(c => c.active).map(generateConfigUri).join('\n');
+  // Only include active and implemented protocols (VLESS and Trojan) in client subscription
+  const supportedProtocols = ['vless', 'trojan'];
+  const uris = configs
+    .filter(c => c.active && supportedProtocols.includes(c.protocol))
+    .map(generateConfigUri)
+    .filter(Boolean)
+    .join('\n');
+
   if (typeof window !== 'undefined') {
     return btoa(unescape(encodeURIComponent(uris)));
   }
@@ -170,8 +184,11 @@ export function generateUserPersonalizedConfigs(
   baseConfigs: ProxyConfig[],
   domainOverride?: string
 ): ProxyConfig[] {
+  // Only export supported active protocols (VLESS & Trojan) to user subscriptions
+  const supportedProtocols = ['vless', 'trojan'];
+
   return baseConfigs
-    .filter(c => c.active && (user.allowedConfigs.includes('all') || user.allowedConfigs.includes(c.id)))
+    .filter(c => c.active && supportedProtocols.includes(c.protocol) && (user.allowedConfigs.includes('all') || user.allowedConfigs.includes(c.id)))
     .map(c => {
       const server = domainOverride && c.server.includes('my-app') ? domainOverride : c.server;
       const host = domainOverride && c.host && c.host.includes('my-app') ? domainOverride : (c.host || server);
@@ -185,6 +202,8 @@ export function generateUserPersonalizedConfigs(
         // Mandatory user.uuid override: VLESS auth checks db.users[].uuid so link must have user's exact UUID
         uuid: user.uuid || c.uuid,
         password: user.trojanPassword || user.token || c.password,
+        cleanIp: c.cleanIp,
+        useCleanIp: c.useCleanIp,
         fragment: c.fragment,
         fragmentLength: c.fragmentLength,
         fragmentInterval: c.fragmentInterval,
@@ -384,17 +403,26 @@ name = "${packageName}"
 version = "0.1.0"
 description = "RayPanel - Proxy & MahsaNG Subscription Manager on Wasmer Edge"
 license = "MIT"
+entrypoint = "server"
 
 [dependencies]
-"wasmer/static-web-server" = "^1"
+"wasmer/edgejs" = "0.1.24"
+
+[fs]
+"/app" = "."
 
 [[command]]
 name = "server"
-module = "wasmer/static-web-server:webserver"
-runner = "wasi"
+module = "wasmer/edgejs:node"
+runner = "https://webc.org/runner/wasi"
 
-[fs]
-"/public" = "dist"
+[command.annotations.wasi]
+main-args = ["/app/dist/server/server.cjs"]
+env = [
+  "NODE_ENV=production",
+  "PORT=8080",
+  "HOME=/tmp"
+]
 `;
 }
 
@@ -405,11 +433,19 @@ export function generateWasmerAppYaml(appName = 'raypanel-app'): string {
   return `kind: wasmer.io/App.v0
 name: ${appName}
 package: .
+
 env:
-  NODE_ENV: production
+  NODE_ENV: "production"
   PORT: "8080"
+
 capabilities:
-  instaboot: true
+  instaboot:
+    requests:
+      - path: /
+
+locality:
+  regions:
+    - fr-roub1
 `;
 }
 
@@ -442,7 +478,7 @@ RUN npm ci --only=production --ignore-scripts || npm install --omit=dev
 EXPOSE 8080
 EXPOSE 3000
 
-CMD ["node", "dist/server.cjs"]
+CMD ["node", "dist/server/server.cjs"]
 `;
 }
 

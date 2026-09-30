@@ -17,7 +17,7 @@ module = "wasmer/edgejs:node"
 runner = "https://webc.org/runner/wasi"
 
 [command.annotations.wasi]
-main-args = ["/app/dist/server.cjs"]
+main-args = ["/app/dist/server/server.cjs"]
 env = [
   "NODE_ENV=production",
   "PORT=8080",

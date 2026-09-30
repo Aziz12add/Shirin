@@ -360,14 +360,26 @@ export const TrafficSimulator: React.FC<TrafficSimulatorProps> = ({
 
           {/* Quick live speed badge banner */}
           {stats && (
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-[#0a0a0a] p-2.5 rounded-lg border border-[#1f1f1f]">
-              <div className="flex items-center gap-1.5 text-blue-400">
-                <ArrowDown className="h-3.5 w-3.5" />
-                <span>↓ {formatSpeed(stats.liveDownloadSpeedBps)}</span>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-[#0a0a0a] p-2.5 rounded-lg border border-[#1f1f1f]">
+                <div className="flex items-center gap-1.5 text-blue-400">
+                  <ArrowDown className="h-3.5 w-3.5" />
+                  <span>↓ {formatSpeed(stats.liveDownloadSpeedBps)}</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-emerald-400">
+                  <ArrowUp className="h-3.5 w-3.5" />
+                  <span>↑ {formatSpeed(stats.liveUploadSpeedBps)}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 text-emerald-400">
-                <ArrowUp className="h-3.5 w-3.5" />
-                <span>↑ {formatSpeed(stats.liveUploadSpeedBps)}</span>
+              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono bg-[#0d0d0d] p-2 rounded-lg border border-[#1a1a1a] text-gray-400">
+                <div>
+                  <span className="text-gray-500 block text-[10px]">{lang === 'fa' ? 'ترافیک نشست جاری:' : 'Session Traffic:'}</span>
+                  <span className="text-white font-medium">{stats.sessionTrafficMB ?? stats.todayTrafficMB} MB</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-[10px]">{lang === 'fa' ? 'ترافیک مادام‌العمر سرور:' : 'Lifetime Persisted:'}</span>
+                  <span className="text-[#c5a47e] font-medium">{stats.lifetimeTrafficGB ? `${stats.lifetimeTrafficGB} GB` : `${formatBytes(stats.totalUploadBytes || 0)}`}</span>
+                </div>
               </div>
             </div>
           )}

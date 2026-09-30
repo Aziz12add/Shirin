@@ -92,72 +92,67 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
     setFormConfig(prev => ({ ...prev, password: pass }));
   };
 
-  const handleApplyPreset = (type: 'railway_vless' | 'railway_trojan' | 'reality' | 'http_proxy') => {
-    if (type === 'railway_vless') {
+  const handleApplyPreset = (type: 'wasmer_vless_mci' | 'wasmer_trojan_irancell' | 'wasmer_vless_fixed') => {
+    const deploymentHost = typeof window !== 'undefined' ? window.location.hostname : 'my-app.wasmer.app';
+    if (type === 'wasmer_vless_mci') {
       setFormConfig(prev => ({
         ...prev,
         protocol: 'vless',
-        name: 'Railway VLESS-WS (TLS)',
-        server: 'my-app.up.railway.app',
+        name: 'Wasmer VLESS-WS (همراه اول / MCI)',
+        server: deploymentHost,
         port: 443,
         transport: 'ws',
-        path: '/vless-railway',
-        host: 'my-app.up.railway.app',
-        sni: 'my-app.up.railway.app',
+        path: '/vless-ws',
+        host: deploymentHost,
+        sni: deploymentHost,
         security: 'tls',
-        remark: '🇮🇷 Railway VLESS WS ⚡ MCI/Irancell',
+        remark: '⚡ Wasmer VLESS WS-TLS 🇮🇷 MCI',
         operatorPreset: 'mci',
-        cleanIp: '104.16.132.229'
+        cleanIp: '104.16.132.229',
+        useCleanIp: false,
+        fragment: true,
+        fragmentLength: '10-50',
+        fragmentInterval: '20-50',
+        fragmentPackets: 'tlshello',
       }));
-    } else if (type === 'railway_trojan') {
+    } else if (type === 'wasmer_trojan_irancell') {
       setFormConfig(prev => ({
         ...prev,
         protocol: 'trojan',
-        name: 'Railway Trojan-WS (TLS)',
-        server: 'my-app.up.railway.app',
+        name: 'Wasmer Trojan-WS (ایرانسل / Irancell)',
+        server: deploymentHost,
         port: 443,
-        password: 'RailwayPass_2026_SecureKey',
+        password: prev.password || 'TrojanPass_Wasmer2026',
         transport: 'ws',
-        path: '/trojan-railway',
-        host: 'my-app.up.railway.app',
-        sni: 'my-app.up.railway.app',
+        path: '/trojan-ws',
+        host: deploymentHost,
+        sni: deploymentHost,
         security: 'tls',
-        remark: '🇮🇷 Railway Trojan WS 🚀 Ultra Fast',
+        remark: '🚀 Wasmer Trojan WS-TLS 🇮🇷 Irancell',
         operatorPreset: 'irancell',
-        cleanIp: '162.159.136.232'
+        cleanIp: '162.159.136.232',
+        useCleanIp: false,
       }));
-    } else if (type === 'reality') {
+    } else if (type === 'wasmer_vless_fixed') {
       setFormConfig(prev => ({
         ...prev,
         protocol: 'vless',
-        name: 'VLESS Reality TCP Direct',
-        server: '185.199.110.153',
+        name: 'Wasmer VLESS-WS (ثابت / مخابرات)',
+        server: deploymentHost,
         port: 443,
-        transport: 'tcp',
-        security: 'reality',
-        realityPublicKey: 'Iq5dE8Z7yL4k-9Nm1xW3vP6qR8sT0uV2wX4yZ6aB8cD',
-        realityShortId: '6ba7b810',
-        spiderX: '/',
-        flow: 'xtls-rprx-vision',
-        sni: 'www.microsoft.com',
-        remark: '🔒 VLESS Reality ⚡ Anti-Filter Direct',
-        operatorPreset: 'all',
-        cleanIp: ''
-      }));
-    } else if (type === 'http_proxy') {
-      setFormConfig(prev => ({
-        ...prev,
-        protocol: 'http',
-        name: 'HTTP Secure Proxy (Auth)',
-        server: 'my-app.up.railway.app',
-        port: 8080,
-        username: 'rayuser',
-        password: 'securePass7788',
-        transport: 'tcp',
-        security: 'none',
-        remark: '🌐 HTTP Auth Proxy',
-        operatorPreset: 'mokhaberat',
-        cleanIp: ''
+        transport: 'ws',
+        path: '/vless-ws',
+        host: deploymentHost,
+        sni: deploymentHost,
+        security: 'tls',
+        remark: '🌐 Wasmer VLESS WS-TLS 🇮🇷 شاتل/مخابرات',
+        operatorPreset: 'fixed',
+        cleanIp: '104.19.154.241',
+        useCleanIp: false,
+        fragment: true,
+        fragmentLength: '20-60',
+        fragmentInterval: '10-30',
+        fragmentPackets: '1-3',
       }));
     }
   };
@@ -351,11 +346,19 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                       <span className={`rounded px-2 py-0.5 text-[10px] font-mono uppercase border ${
                         config.protocol === 'vless' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
                         config.protocol === 'trojan' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                        config.protocol === 'http' ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' :
-                        'bg-blue-500/10 text-blue-300 border-blue-500/20'
+                        'bg-rose-500/10 text-rose-300 border-rose-500/20'
                       }`}>
                         {config.protocol}
                       </span>
+                      {config.protocol !== 'vless' && config.protocol !== 'trojan' ? (
+                        <span className="rounded bg-rose-950/40 border border-rose-800/40 px-1.5 py-0.5 text-[9px] font-medium text-rose-300">
+                          {lang === 'fa' ? 'نیازمند هسته Xray خارجی' : 'Needs External Core'}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-emerald-950/40 border border-emerald-800/40 px-1.5 py-0.5 text-[9px] font-medium text-emerald-400">
+                          {lang === 'fa' ? 'پروکسی زنده Wasmer' : 'Live Wasmer Engine'}
+                        </span>
+                      )}
                       <span className="rounded bg-[#1c1c1c] border border-[#2a2a2a] px-2 py-0.5 text-[10px] font-mono text-gray-400">
                         {config.transport.toUpperCase()} {config.security ? `• ${config.security.toUpperCase()}` : ''}
                       </span>
@@ -550,35 +553,28 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
             {/* Presets Bar */}
             <div className="bg-[#0d0d0d] border-b border-[#222222] px-6 py-2.5 flex items-center gap-2 overflow-x-auto">
               <span className="text-[11px] uppercase tracking-wider text-gray-500 whitespace-nowrap">
-                {lang === 'fa' ? 'قالب‌های سریع ریلوی:' : 'Quick Presets:'}
+                {lang === 'fa' ? 'قالب‌های پایدار Wasmer Edge:' : 'Wasmer Presets:'}
               </span>
               <button
                 type="button"
-                onClick={() => handleApplyPreset('railway_vless')}
+                onClick={() => handleApplyPreset('wasmer_vless_mci')}
                 className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-blue-400 hover:bg-blue-950/40 border border-blue-500/20"
               >
-                ⚡ Railway VLESS-WS
+                ⚡ همراه اول VLESS-WS
               </button>
               <button
                 type="button"
-                onClick={() => handleApplyPreset('railway_trojan')}
-                className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-purple-400 hover:bg-purple-950/40 border border-purple-500/20"
+                onClick={() => handleApplyPreset('wasmer_trojan_irancell')}
+                className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-amber-400 hover:bg-amber-950/40 border border-amber-500/20"
               >
-                🚀 Railway Trojan-WS
+                🚀 ایرانسل Trojan-WS
               </button>
               <button
                 type="button"
-                onClick={() => handleApplyPreset('reality')}
-                className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-[#c5a47e] hover:bg-[#c5a47e]/10 border border-[#c5a47e]/30"
+                onClick={() => handleApplyPreset('wasmer_vless_fixed')}
+                className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-emerald-400 hover:bg-emerald-950/40 border border-emerald-500/20"
               >
-                🔒 VLESS Reality TCP
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyPreset('http_proxy')}
-                className="whitespace-nowrap rounded-lg bg-[#1a1a1a] px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-950/40 border border-amber-500/20"
-              >
-                🌐 HTTP Auth Proxy
+                🌐 مخابرات/شاتل VLESS-WS
               </button>
             </div>
 
@@ -596,10 +592,11 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                     onChange={(e) => setFormConfig(prev => ({ ...prev, protocol: e.target.value as ProxyProtocol }))}
                     className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-white font-medium outline-none focus:border-[#c5a47e]"
                   >
-                    <option value="vless">VLESS (پیشنهادی ریلوی و مهسا آن‌جی)</option>
-                    <option value="trojan">Trojan (استاندارد ضد فیلتر)</option>
-                    <option value="http">HTTP Proxy (ساده و پرسرعت)</option>
-                    <option value="vmess">VMess</option>
+                    <option value="vless">VLESS-WS (پروکسی بومی Wasmer و مهسا آن‌جی - فعال)</option>
+                    <option value="trojan">Trojan-WS (پروکسی بومی Wasmer و مهسا آن‌جی - فعال)</option>
+                    <option value="vmess" disabled>VMess (غیرفعال در سرور Wasmer Edge)</option>
+                    <option value="shadowsocks" disabled>Shadowsocks (غیرفعال در سرور Wasmer Edge)</option>
+                    <option value="http" disabled>HTTP Proxy (غیرفعال در سرور Wasmer Edge)</option>
                   </select>
                 </div>
 
@@ -702,6 +699,21 @@ export const ConfigManager: React.FC<ConfigManagerProps> = ({
                     placeholder="104.16.132.229"
                     className="w-full rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 text-xs text-white font-mono outline-none focus:border-[#c5a47e]"
                   />
+                  {formConfig.cleanIp && (
+                    <label className="flex items-center gap-2 mt-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formConfig.useCleanIp ?? false}
+                        onChange={(e) => setFormConfig(prev => ({ ...prev, useCleanIp: e.target.checked }))}
+                        className="rounded border-[#333] text-[#c5a47e] focus:ring-0"
+                      />
+                      <span className="text-[11px] text-gray-400">
+                        {lang === 'fa' 
+                          ? 'استفاده فعال از Clean IP به عنوان مقصد اتصال (در غیر این صورت Server استفاده می‌شود)' 
+                          : 'Override destination connection with this Clean IP'}
+                      </span>
+                    </label>
+                  )}
                 </div>
               </div>
 

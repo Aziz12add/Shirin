@@ -23,4 +23,4 @@ RUN npm ci --only=production --ignore-scripts || npm install --omit=dev
 EXPOSE 8080
 EXPOSE 3000
 
-CMD ["node", "dist/server.cjs"]
+CMD ["node", "dist/server/server.cjs"]
