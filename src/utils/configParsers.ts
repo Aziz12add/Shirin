@@ -1,94 +1,106 @@
 import { ProxyConfig, UserAccount } from '../types';
 
+// Deployment file generators now live in ./deployTemplates. Re-exported so existing imports keep working;
+// switch imports to './deployTemplates' and delete this line when convenient.
+export * from './deployTemplates';
+
+/** Protocols the embedded server can actually serve (and therefore the only ones put in subscriptions). */
+const RUNTIME_PROTOCOLS = ['vless', 'trojan'];
+
+/** Old seeds used "my-app.wasmer.app" as a stand-in host; it is swapped for the real host per request. */
+const PLACEHOLDER_HOST = /^my-app(\.|$)/;
+
+// ==========================================
+// Helpers
+// ==========================================
+const toBase64 = (text: string): string => {
+  if (typeof Buffer !== 'undefined') return Buffer.from(text, 'utf-8').toString('base64');
+  const bytes = new TextEncoder().encode(text); // browser path (no deprecated unescape)
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+};
+
+const formatHost = (host: string): string => (host.includes(':') && !host.startsWith('[') ? `[${host}]` : host);
+
+/** Destination host: the clean IP when enabled, otherwise the server domain. */
+const targetHost = (c: ProxyConfig): string => formatHost(c.useCleanIp && c.cleanIp ? c.cleanIp : c.server);
+
+const encodedRemark = (c: ProxyConfig, fallback: string): string => encodeURIComponent(c.remark || c.name || fallback);
+
 /**
- * Generate VLESS URI
- * Format: vless://uuid@server:port?type=ws&security=tls&path=...&sni=...&host=...#Remark
- * If config.useCleanIp is explicitly true and cleanIp is present, destination host is cleanIp.
- * Otherwise, host is config.server.
+ * type / security / path / sni / host / alpn, shared by VLESS and Trojan.
+ * SNI and Host keep the real domain even when a clean IP is the destination, so the TLS handshake stays valid.
  */
-export function generateVlessUri(config: ProxyConfig): string {
-  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
-  const port = config.port || 443;
-  const uuid = config.uuid || '00000000-0000-0000-0000-000000000000';
-  
-  const params = new URLSearchParams();
-  params.set('type', config.transport || 'ws');
-  params.set('security', config.security || 'tls');
-  
-  if (config.path) params.set('path', config.path);
-  // sni and host header should reflect domain (server), ensuring TLS handshake validity even when cleanIp is used
-  const domainHeader = config.host || config.sni || config.server;
-  if (domainHeader) {
-    params.set('sni', config.sni || domainHeader);
-    params.set('host', config.host || domainHeader);
+function transportParams(c: ProxyConfig): URLSearchParams {
+  const p = new URLSearchParams();
+  p.set('type', c.transport || 'ws');
+  p.set('security', c.security || 'tls');
+  if (c.path) p.set('path', c.path);
+  const domain = c.host || c.sni || c.server;
+  if (domain) {
+    p.set('sni', c.sni || domain);
+    p.set('host', c.host || domain);
   }
-  if (config.alpn) params.set('alpn', config.alpn);
+  if (c.alpn) p.set('alpn', c.alpn);
+  return p;
+}
+
+// ==========================================
+// URI generators
+// A link without credentials is never emitted (empty string): a placeholder UUID/password
+// produces a link that looks fine but can never connect, which is very hard to debug.
+// ==========================================
+
+/** vless://uuid@host:port?encryption=none&type=ws&security=tls&path=...&sni=...&host=...#Remark */
+export function generateVlessUri(config: ProxyConfig): string {
+  if (!config.uuid) return '';
+
+  const params = transportParams(config);
+  params.set('encryption', 'none'); // required by the VLESS spec for every VLESS link
   if (config.flow) params.set('flow', config.flow);
-  
+
   if (config.security === 'reality') {
-    params.set('security', 'reality');
-    params.set('encryption', 'none');
     params.set('fp', 'chrome');
     if (config.realityPublicKey) params.set('pbk', config.realityPublicKey);
     if (config.realityShortId) params.set('sid', config.realityShortId);
     if (config.spiderX) params.set('spx', config.spiderX);
     params.set('flow', config.flow || 'xtls-rprx-vision');
-    if (config.sni || config.server) params.set('sni', config.sni || config.server);
+    params.set('sni', config.sni || config.server);
   }
 
-  // Fragment anti-censorship parameters (recognized by MahsaNG, V2rayNG, Xray-core)
-  // Format in URI query: fragment=10-50,20-50,tlshello or separate params
+  // Fragment (anti-censorship), understood by MahsaNG / v2rayNG / Xray-core
   if (config.fragment) {
-    const fLen = config.fragmentLength || '10-50';
-    const fInterval = config.fragmentInterval || '20-50';
-    const fPackets = config.fragmentPackets || '1-3';
-    params.set('fragment', `${fLen},${fInterval},${fPackets}`);
-    params.set('fragmentLength', fLen);
-    params.set('fragmentInterval', fInterval);
-    params.set('fragmentPackets', fPackets);
+    const length = config.fragmentLength || '10-50';
+    const interval = config.fragmentInterval || '20-50';
+    const packets = config.fragmentPackets || '1-3';
+    params.set('fragment', `${length},${interval},${packets}`);
+    params.set('fragmentLength', length);
+    params.set('fragmentInterval', interval);
+    params.set('fragmentPackets', packets);
   }
 
-  const remark = encodeURIComponent(config.remark || config.name || 'VLESS Node');
-  return `vless://${uuid}@${host}:${port}?${params.toString()}#${remark}`;
+  return `vless://${config.uuid}@${targetHost(config)}:${config.port || 443}?${params.toString()}#${encodedRemark(config, 'VLESS Node')}`;
 }
 
-/**
- * Generate Trojan URI
- * Format: trojan://password@server:port?security=tls&type=ws&path=...&sni=...#Remark
- */
+/** trojan://password@host:port?security=tls&type=ws&path=...&sni=...#Remark */
 export function generateTrojanUri(config: ProxyConfig): string {
-  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
-  const port = config.port || 443;
-  const password = encodeURIComponent(config.password || 'password123');
-  
-  const params = new URLSearchParams();
-  params.set('security', config.security || 'tls');
-  params.set('type', config.transport || 'ws');
-  
-  if (config.path) params.set('path', config.path);
-  const domainHeader = config.host || config.sni || config.server;
-  if (domainHeader) {
-    params.set('sni', config.sni || domainHeader);
-    params.set('host', config.host || domainHeader);
-  }
-  if (config.alpn) params.set('alpn', config.alpn);
-
-  const remark = encodeURIComponent(config.remark || config.name || 'Trojan Node');
-  return `trojan://${password}@${host}:${port}?${params.toString()}#${remark}`;
+  if (!config.password) return '';
+  const params = transportParams(config);
+  return `trojan://${encodeURIComponent(config.password)}@${targetHost(config)}:${config.port || 443}?${params.toString()}#${encodedRemark(config, 'Trojan Node')}`;
 }
 
-/**
- * Generate VMess URI
- * Format: vmess://<base64-json>
- */
+// --- Not served by the embedded server; kept for the UI / manual export only ---
+
+/** vmess://<base64-json> */
 export function generateVmessUri(config: ProxyConfig): string {
-  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
-  const vmessObj = {
+  if (!config.uuid) return '';
+  const vmess = {
     v: '2',
     ps: config.remark || config.name || 'VMess Node',
-    add: host,
+    add: config.useCleanIp && config.cleanIp ? config.cleanIp : config.server,
     port: String(config.port || 443),
-    id: config.uuid || '00000000-0000-0000-0000-000000000000',
+    id: config.uuid,
     aid: '0',
     scy: 'auto',
     net: config.transport || 'ws',
@@ -99,418 +111,157 @@ export function generateVmessUri(config: ProxyConfig): string {
     sni: config.sni || config.host || config.server || '',
     alpn: config.alpn || '',
   };
-
-  const jsonStr = JSON.stringify(vmessObj);
-  const base64 = typeof window !== 'undefined' 
-    ? btoa(unescape(encodeURIComponent(jsonStr)))
-    : Buffer.from(jsonStr).toString('base64');
-    
-  return `vmess://${base64}`;
+  return `vmess://${toBase64(JSON.stringify(vmess))}`;
 }
 
-/**
- * Generate HTTP Proxy URI
- * Format: http://user:pass@server:port#Remark
- */
+/** http://user:pass@host:port#Remark */
 export function generateHttpUri(config: ProxyConfig): string {
-  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
-  const port = config.port || 8080;
-  const auth = config.username && config.password 
+  const auth = config.username && config.password
     ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password)}@`
     : '';
-  const remark = encodeURIComponent(config.remark || config.name || 'HTTP Proxy');
-  return `http://${auth}${host}:${port}#${remark}`;
+  return `http://${auth}${targetHost(config)}:${config.port || 8080}#${encodedRemark(config, 'HTTP Proxy')}`;
 }
 
-/**
- * Generate Shadowsocks URI
- */
+/** ss://base64(method:password)@host:port#Remark */
 export function generateShadowsocksUri(config: ProxyConfig): string {
-  const host = (config.useCleanIp && config.cleanIp) ? config.cleanIp : config.server;
-  const port = config.port || 8388;
-  const method = 'aes-256-gcm';
-  const password = config.password || 'password';
-  const userInfo = typeof window !== 'undefined'
-    ? btoa(`${method}:${password}`)
-    : Buffer.from(`${method}:${password}`).toString('base64');
-  const remark = encodeURIComponent(config.remark || config.name || 'Shadowsocks');
-  return `ss://${userInfo}@${host}:${port}#${remark}`;
+  if (!config.password) return '';
+  const userInfo = toBase64(`aes-256-gcm:${config.password}`);
+  return `ss://${userInfo}@${targetHost(config)}:${config.port || 8388}#${encodedRemark(config, 'Shadowsocks')}`;
 }
 
-/**
- * Universal URI generator based on config protocol
- */
+/** Link for any config; empty string when the protocol is unknown or credentials are missing. */
 export function generateConfigUri(config: ProxyConfig): string {
   switch (config.protocol) {
-    case 'vless':
-      return generateVlessUri(config);
-    case 'trojan':
-      return generateTrojanUri(config);
-    case 'vmess':
-      return generateVmessUri(config);
-    case 'http':
-      return generateHttpUri(config);
-    case 'shadowsocks':
-      return generateShadowsocksUri(config);
-    default:
-      return generateVlessUri(config);
+    case 'vless': return generateVlessUri(config);
+    case 'trojan': return generateTrojanUri(config);
+    case 'vmess': return generateVmessUri(config);
+    case 'http': return generateHttpUri(config);
+    case 'shadowsocks': return generateShadowsocksUri(config);
+    default: return '';
   }
 }
 
-/**
- * Convert a list of configs to Base64 subscription string for MahsaNG / V2rayNG
- * Only active nodes with implemented runtime protocols (VLESS and Trojan) are exported.
- */
+// ==========================================
+// Subscriptions
+// ==========================================
+
+/** Base64 subscription body for MahsaNG / v2rayNG: active VLESS and Trojan nodes only. */
 export function generateSubscriptionBase64(configs: ProxyConfig[]): string {
-  // Only include active and implemented protocols (VLESS and Trojan) in client subscription
-  const supportedProtocols = ['vless', 'trojan'];
   const uris = configs
-    .filter(c => c.active && supportedProtocols.includes(c.protocol))
+    .filter(c => c.active && RUNTIME_PROTOCOLS.includes(c.protocol))
     .map(generateConfigUri)
     .filter(Boolean)
     .join('\n');
-
-  if (typeof window !== 'undefined') {
-    return btoa(unescape(encodeURIComponent(uris)));
-  }
-  return Buffer.from(uris).toString('base64');
+  return toBase64(uris);
 }
 
 /**
- * Personalize configs with a specific user's UUID and Trojan credentials
+ * Per-user copies of the base configs: the user's UUID (VLESS) or Trojan password, and the real public host.
+ * Each protocol only receives its own credential.
  */
 export function generateUserPersonalizedConfigs(
   user: UserAccount,
   baseConfigs: ProxyConfig[],
   domainOverride?: string
 ): ProxyConfig[] {
-  // Only export supported active protocols (VLESS & Trojan) to user subscriptions
-  const supportedProtocols = ['vless', 'trojan'];
+  const swap = (value?: string) => (domainOverride && value && PLACEHOLDER_HOST.test(value) ? domainOverride : value);
+  const allowed = user.allowedConfigs ?? ['all'];
+  const allowAll = allowed.includes('all');
 
   return baseConfigs
-    .filter(c => c.active && supportedProtocols.includes(c.protocol) && (user.allowedConfigs.includes('all') || user.allowedConfigs.includes(c.id)))
+    .filter(c => c.active && RUNTIME_PROTOCOLS.includes(c.protocol) && (allowAll || allowed.includes(c.id)))
     .map(c => {
-      const server = domainOverride && c.server.includes('my-app') ? domainOverride : c.server;
-      const host = domainOverride && c.host && c.host.includes('my-app') ? domainOverride : (c.host || server);
-      const sni = domainOverride && c.sni && c.sni.includes('my-app') ? domainOverride : (c.sni || server);
-
+      const server = swap(c.server) || c.server;
       return {
         ...c,
         server,
-        host,
-        sni,
-        // Mandatory user.uuid override: VLESS auth checks db.users[].uuid so link must have user's exact UUID
-        uuid: user.uuid || c.uuid,
-        password: user.trojanPassword || user.token || c.password,
-        cleanIp: c.cleanIp,
-        useCleanIp: c.useCleanIp,
-        fragment: c.fragment,
-        fragmentLength: c.fragmentLength,
-        fragmentInterval: c.fragmentInterval,
-        fragmentPackets: c.fragmentPackets,
+        host: swap(c.host) || server,
+        sni: swap(c.sni) || server,
+        // Trojan falls back to the subscription token for users created before trojanPassword existed (matches the server).
+        ...(c.protocol === 'trojan'
+          ? { password: user.trojanPassword || user.token || c.password }
+          : { uuid: user.uuid || c.uuid }),
         remark: `${c.remark || c.name} [${user.username}]`,
       };
     });
 }
 
-/**
- * Parse standard V2Ray URI into a ProxyConfig object
- */
+// ==========================================
+// Import
+// ==========================================
+
+/** Parse a vless:// or trojan:// link into a config (null when unsupported or malformed). */
 export function parseConfigUri(uri: string): Partial<ProxyConfig> | null {
   try {
     const trimmed = uri.trim();
-    if (trimmed.startsWith('vless://')) {
-      const parsed = new URL(trimmed);
-      const uuid = parsed.username;
-      const server = parsed.hostname;
-      const port = parseInt(parsed.port || '443', 10);
-      const search = parsed.searchParams;
-      const remark = decodeURIComponent(parsed.hash.replace('#', '') || 'Imported VLESS');
+    const isVless = trimmed.startsWith('vless://');
+    const isTrojan = trimmed.startsWith('trojan://');
+    if (!isVless && !isTrojan) return null;
 
-      const fragQuery = search.get('fragment');
-      let fragLength = search.get('fragmentLength') || '10-50';
-      let fragInterval = search.get('fragmentInterval') || '20-50';
-      let fragPackets = search.get('fragmentPackets') || '1-3';
+    const parsed = new URL(trimmed);
+    const search = parsed.searchParams;
+    const server = parsed.hostname.replace(/^\[|\]$/g, ''); // IPv6 comes back bracketed
+    const remark = decodeURIComponent(parsed.hash.slice(1)) || (isVless ? 'Imported VLESS' : 'Imported Trojan');
 
-      if (fragQuery) {
-        const parts = fragQuery.split(',');
-        if (parts[0]) fragLength = parts[0];
-        if (parts[1]) fragInterval = parts[1];
-        if (parts[2]) fragPackets = parts[2];
-      }
+    const common = {
+      server,
+      port: parseInt(parsed.port || '443', 10),
+      transport: (search.get('type') as any) || 'ws',
+      security: (search.get('security') as any) || 'tls',
+      path: search.get('path') || '/',
+      sni: search.get('sni') || server,
+      host: search.get('host') || server,
+      remark,
+      name: remark,
+      active: true,
+    };
 
-      return {
-        protocol: 'vless',
-        server,
-        port,
-        uuid,
-        transport: (search.get('type') as any) || 'ws',
-        security: (search.get('security') as any) || 'tls',
-        path: search.get('path') || '/',
-        sni: search.get('sni') || server,
-        host: search.get('host') || server,
-        flow: search.get('flow') || '',
-        realityPublicKey: search.get('pbk') || '',
-        realityShortId: search.get('sid') || '',
-        spiderX: search.get('spx') || '',
-        fragment: Boolean(fragQuery || search.get('fragmentLength')),
-        fragmentLength: fragLength,
-        fragmentInterval: fragInterval,
-        fragmentPackets: fragPackets,
-        remark,
-        name: remark,
-        active: true,
-      };
-    } else if (trimmed.startsWith('trojan://')) {
-      const parsed = new URL(trimmed);
-      const password = decodeURIComponent(parsed.username);
-      const server = parsed.hostname;
-      const port = parseInt(parsed.port || '443', 10);
-      const search = parsed.searchParams;
-      const remark = decodeURIComponent(parsed.hash.replace('#', '') || 'Imported Trojan');
-
-      return {
-        protocol: 'trojan',
-        server,
-        port,
-        password,
-        transport: (search.get('type') as any) || 'ws',
-        security: (search.get('security') as any) || 'tls',
-        path: search.get('path') || '/',
-        sni: search.get('sni') || server,
-        host: search.get('host') || server,
-        remark,
-        name: remark,
-        active: true,
-      };
+    if (isTrojan) {
+      return { ...common, protocol: 'trojan', password: decodeURIComponent(parsed.username) };
     }
-    return null;
+
+    // "fragment=len,interval,packets" or the three separate parameters
+    const fragmentQuery = search.get('fragment');
+    let [length, interval, packets] = [
+      search.get('fragmentLength') || '10-50',
+      search.get('fragmentInterval') || '20-50',
+      search.get('fragmentPackets') || '1-3',
+    ];
+    if (fragmentQuery) {
+      const parts = fragmentQuery.split(',');
+      if (parts[0]) length = parts[0];
+      if (parts[1]) interval = parts[1];
+      if (parts[2]) packets = parts[2];
+    }
+
+    return {
+      ...common,
+      protocol: 'vless',
+      uuid: parsed.username,
+      flow: search.get('flow') || '',
+      realityPublicKey: search.get('pbk') || '',
+      realityShortId: search.get('sid') || '',
+      spiderX: search.get('spx') || '',
+      fragment: Boolean(fragmentQuery || search.get('fragmentLength')),
+      fragmentLength: length,
+      fragmentInterval: interval,
+      fragmentPackets: packets,
+    };
   } catch (err) {
     console.error('Failed to parse URI:', err);
     return null;
   }
 }
 
-/**
- * Generate Xray server config for Railway Deployment (xray.json)
- */
-export function generateRailwayXrayConfig(settings: {
-  uuid: string;
-  trojanPassword?: string;
-  vlessWsPath?: string;
-  trojanWsPath?: string;
-  port?: number;
-}): string {
-  const config = {
-    log: {
-      loglevel: "warning"
-    },
-    inbounds: [
-      {
-        port: settings.port || 3000,
-        protocol: "vless",
-        settings: {
-          clients: [
-            {
-              id: settings.uuid,
-              level: 0
-            }
-          ],
-          decryption: "none"
-        },
-        streamSettings: {
-          network: "ws",
-          wsSettings: {
-            path: settings.vlessWsPath || "/vless-railway"
-          }
-        }
-      },
-      {
-        port: 3001,
-        protocol: "trojan",
-        settings: {
-          clients: [
-            {
-              password: settings.trojanPassword || "RayPassword2026",
-              level: 0
-            }
-          ]
-        },
-        streamSettings: {
-          network: "ws",
-          wsSettings: {
-            path: settings.trojanWsPath || "/trojan-railway"
-          }
-        }
-      }
-    ],
-    outbounds: [
-      {
-        protocol: "freedom",
-        tag: "direct"
-      },
-      {
-        protocol: "blackhole",
-        tag: "blocked"
-      }
-    ]
-  };
+// ==========================================
+// Formatting
+// ==========================================
 
-  return JSON.stringify(config, null, 2);
-}
-
-/**
- * Generate Dockerfile for Railway Deploy
- */
-export function generateRailwayDockerfile(): string {
-  return `FROM teddysun/xray:latest
-LABEL maintainer="RayPanel Private Deployment"
-
-# Copy xray configuration file
-COPY config.json /etc/xray/config.json
-
-# Expose Railway default PORT
-EXPOSE 3000
-
-# Start Xray service
-CMD ["xray", "run", "-config", "/etc/xray/config.json"]
-`;
-}
-
-/**
- * Generate Railway railway.json template
- */
-export function generateRailwayJsonConfig(): string {
-  return JSON.stringify({
-    "$schema": "https://railway.com/railway.schema.json",
-    "build": {
-      "builder": "DOCKERFILE",
-      "dockerfilePath": "Dockerfile"
-    },
-    "deploy": {
-      "restartPolicyType": "ON_FAILURE",
-      "restartPolicyMaxRetries": 10
-    }
-  }, null, 2);
-}
-
-/**
- * Generate wasmer.toml for Wasmer Edge deployment
- */
-export function generateWasmerToml(packageName = 'raypanel-app'): string {
-  return `[package]
-name = "${packageName}"
-version = "0.1.0"
-description = "RayPanel - Proxy & MahsaNG Subscription Manager on Wasmer Edge"
-license = "MIT"
-entrypoint = "server"
-
-[dependencies]
-"wasmer/edgejs" = "0.1.24"
-
-[fs]
-"/app" = "."
-
-[[command]]
-name = "server"
-module = "wasmer/edgejs:node"
-runner = "https://webc.org/runner/wasi"
-
-[command.annotations.wasi]
-main-args = ["/app/dist/server/server.cjs"]
-env = [
-  "NODE_ENV=production",
-  "PORT=8080",
-  "HOME=/tmp"
-]
-`;
-}
-
-/**
- * Generate app.yaml for Wasmer Edge deployment
- */
-export function generateWasmerAppYaml(appName = 'raypanel-app'): string {
-  return `kind: wasmer.io/App.v0
-name: ${appName}
-package: .
-
-env:
-  NODE_ENV: "production"
-  PORT: "8080"
-
-capabilities:
-  instaboot:
-    requests:
-      - path: /
-
-locality:
-  regions:
-    - fr-roub1
-`;
-}
-
-/**
- * Generate Dockerfile for Wasmer / Container deployment
- */
-export function generateWasmerDockerfile(): string {
-  return `# Multi-stage production build for Wasmer / Container Deploy
-FROM node:20-alpine AS builder
-WORKDIR /app
-
-COPY package*.json ./
-RUN npm ci
-
-COPY . .
-RUN npm run build
-
-# Production runner stage
-FROM node:20-alpine AS runner
-WORKDIR /app
-
-ENV NODE_ENV=production
-ENV PORT=8080
-
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json ./
-
-RUN npm ci --only=production --ignore-scripts || npm install --omit=dev
-
-EXPOSE 8080
-EXPOSE 3000
-
-CMD ["node", "dist/server/server.cjs"]
-`;
-}
-
-/**
- * Generate CLI commands for Wasmer deployment
- */
-export function generateWasmerCliCommands(): string {
-  return `# 1. Install Wasmer CLI (Linux / macOS / WSL)
-curl https://get.wasmer.io -sSfL | sh
-
-# For Windows PowerShell:
-# iwr https://win.wasmer.io -useb | iex
-
-# 2. Authenticate with Wasmer
-wasmer login
-
-# 3. Build project locally
-npm run build
-
-# 4. Deploy directly to Wasmer Edge
-wasmer deploy
-`;
-}
-
-/**
- * Format bytes to readable human unit (KB, MB, GB)
- */
+/** 1536 -> "1.5 KB". Safe for 0, fractions, negatives and NaN. */
 export function formatBytes(bytes: number, decimals = 2): string {
-  if (bytes === 0) return '0 B';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  const i = Math.min(sizes.length - 1, Math.max(0, Math.floor(Math.log(bytes) / Math.log(k))));
+  return `${parseFloat((bytes / k ** i).toFixed(Math.max(0, decimals)))} ${sizes[i]}`;
 }
