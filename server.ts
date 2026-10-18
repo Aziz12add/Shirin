@@ -334,6 +334,7 @@ app.get('/sub/:token', (req, res) => {
       id: 'alert-expired-node',
       name: msg,
       protocol: 'vless',
+      uuid: '00000000-0000-0000-0000-000000000000', // display-only node: it only needs to show the message in the client
       server: '127.0.0.1',
       port: 443,
       transport: 'ws',
@@ -349,7 +350,7 @@ app.get('/sub/:token', (req, res) => {
   const host = PUBLIC_HOST || (req.headers.host || '').split(':')[0];
   const configs = generateUserPersonalizedConfigs(user, db.configs, host);
 
-  if (req.query.format === 'raw') return res.send(configs.map(generateConfigUri).join('\n'));
+  if (req.query.format === 'raw') return res.send(configs.map(generateConfigUri).filter(Boolean).join('\n'));
   res.send(generateSubscriptionBase64(configs));
 });
 
