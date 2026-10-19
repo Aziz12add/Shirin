@@ -1,45 +1,48 @@
 {
   "name": "shirin",
-  "version": "0.1.0",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "description": "RayPanel – Proxy & Subscription Management Panel",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Aziz12add/Shirin.git"
+  "engines": {
+    "node": ">=20"
   },
-  "engines": { "node": ">=20" },
-  "packageManager": "npm@10.8.2",
   "scripts": {
-    "dev": "tsx watch --env-file=.env server.ts",
+    "dev": "tsx watch server.ts",
     "build": "vite build && npm run build:server",
     "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --target=node20 --minify --external:vite --external:pg-native --external:bufferutil --external:utf-8-validate --outfile=dist/server/server.cjs",
-    "prestart": "node -e \"require('fs').existsSync('dist/server/server.cjs')||process.exit(1)\"",
-    "start": "node --env-file=.env dist/server/server.cjs",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "start": "node dist/server/server.cjs",
+    "test": "node --import tsx/esm tests/regression.test.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext .ts,.tsx",
-    "lint:fix": "eslint . --ext .ts,.tsx --fix",
-    "format": "prettier --write .",
     "preview": "vite preview",
-    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
+    "clean": "rm -rf dist",
     "deploy": "npm run build && wasmer deploy"
   },
   "dependencies": {
     "express": "^4.21.2",
     "pg": "^8.23.0",
-    "ws": "^8.21.3",
-    "helmet": "^8.0.0",
-    "cookie-parser": "^1.4.7",
-    "zod": "^3.24.0",
-    "pino": "^9.5.0"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
-    /* حذف autoprefixer */
-    /* @google/genai فقط اگر واقعاً dev-only است */
-    /* افزودن: eslint, prettier, vitest, @vitest/coverage-v8, supertest, @types/supertest */
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
+    "canvas-confetti": "^1.9.4",
+    "esbuild": "^0.25.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "recharts": "^3.10.1",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
   }
 }
