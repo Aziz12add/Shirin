@@ -2,8 +2,8 @@ import http from 'http';
 import net from 'net';
 import dns from 'dns';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { UserAccount } from '../types';
-import { RateLimiter, getClientIp } from './util';
+import type { UserAccount } from './types';
+import { RateLimiter, getClientIp } from './Util';
 
 // ==========================================
 // Config
@@ -293,7 +293,7 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     const parsed = kind === 'vless' ? parseVless(data) : parseTrojan(data);
     if (!parsed.ok) {
       probeLimiter.hit(ip);
-      return reject(1002, parsed.reason);
+      return reject(1002, 'reason' in parsed ? String((parsed as { reason?: string }).reason ?? 'Bad request') : 'Bad request');
     }
 
     const found = kind === 'vless' ? ctx.findVlessUser(parsed.credential) : ctx.findTrojanUser(parsed.credential);

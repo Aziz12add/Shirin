@@ -19,9 +19,9 @@ import {
   createSeedData,
   resolvePostgresConnection
 } from './src/db/persistence';
-import { attachProxy, stats as proxyStats } from './src/server/proxy';
-import { getClientIp, RateLimiter } from './src/server/util';
-import { hashToken, hashPasswordScrypt, verifyPassword } from './src/server/auth';
+import { attachProxy, stats as proxyStats } from './src/Proxy';
+import { getClientIp, RateLimiter } from './src/Util';
+import { hashToken, hashPasswordScrypt, verifyPassword } from './src/Auth';
 
 // ==========================================
 // 0. CONFIG

@@ -8,3 +8,5 @@ coverage/
 !.env.example
 data/
 *.bak.json
+package-lock.json
+*.bak

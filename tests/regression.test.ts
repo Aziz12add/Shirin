@@ -38,7 +38,7 @@ describe('Shirin / RayPanel Comprehensive Regression & Acceptance Tests', () => 
   // Full Lifecycle: Create user/config -> Crash/Restart -> Reload -> Unchanged Credentials & Sub
   // =========================================================================
   it('A & B & C & E & F & G: Should survive crash/restart with byte-for-byte preserved credentials', async () => {
-    const adapter1 = new JsonFilePersistenceAdapter(testDataDir, defaultAdminUser, defaultAdminHash);
+    const adapter1 = new JsonFilePersistenceAdapter(testDataDir, { adminUsername: defaultAdminUser, adminPasswordHash: defaultAdminHash, secret: "test-secret-deterministic", publicHost: "localhost" });
     await adapter1.init();
 
     const data = await adapter1.load();
@@ -116,7 +116,7 @@ describe('Shirin / RayPanel Comprehensive Regression & Acceptance Tests', () => 
     await adapter1.close();
 
     // Step 4 & 5: Simulate process crash, restart, and reload
-    const adapter2 = new JsonFilePersistenceAdapter(testDataDir, defaultAdminUser, defaultAdminHash);
+    const adapter2 = new JsonFilePersistenceAdapter(testDataDir, { adminUsername: defaultAdminUser, adminPasswordHash: defaultAdminHash, secret: "test-secret-deterministic", publicHost: "localhost" });
     await adapter2.init();
     const reloaded = await adapter2.load();
 
@@ -205,7 +205,7 @@ describe('Shirin / RayPanel Comprehensive Regression & Acceptance Tests', () => 
     assert.strictEqual(isWrongMatch, false, 'Invalid password must not verify');
 
     // Persistent session storage in adapter
-    const adapter = new JsonFilePersistenceAdapter(testDataDir, 'admin', hashed);
+    const adapter = new JsonFilePersistenceAdapter(testDataDir, { adminUsername: 'admin', adminPasswordHash: hashed, secret: "test-secret-deterministic", publicHost: "localhost" });
     await adapter.init();
     const data = await adapter.load();
     data.adminPasswordHash = hashed;
@@ -220,7 +220,7 @@ describe('Shirin / RayPanel Comprehensive Regression & Acceptance Tests', () => 
     await adapter.close();
 
     // Reload in fresh instance
-    const reloadAdapter = new JsonFilePersistenceAdapter(testDataDir, 'admin', hashed);
+    const reloadAdapter = new JsonFilePersistenceAdapter(testDataDir, { adminUsername: 'admin', adminPasswordHash: hashed, secret: "test-secret-deterministic", publicHost: "localhost" });
     await reloadAdapter.init();
     const reloaded = await reloadAdapter.load();
 
@@ -433,7 +433,7 @@ describe('Shirin / RayPanel Comprehensive Regression & Acceptance Tests', () => 
   // Test K: Database migration & persistence idempotency
   // =========================================================================
   it('K: Database initialization and migrations must be idempotent without data loss', async () => {
-    const adapter = new JsonFilePersistenceAdapter(testDataDir, defaultAdminUser, defaultAdminHash);
+    const adapter = new JsonFilePersistenceAdapter(testDataDir, { adminUsername: defaultAdminUser, adminPasswordHash: defaultAdminHash, secret: "test-secret-deterministic", publicHost: "localhost" });
     await adapter.init();
     const data1 = await adapter.load();
     const initialConfigCount = data1.configs.length;
