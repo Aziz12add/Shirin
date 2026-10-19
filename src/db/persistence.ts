@@ -297,17 +297,19 @@ export class PostgresPersistenceAdapter implements PersistenceAdapter {
   /** key -> JSON of what is currently in the DB; lets save() write only what changed */
   private snap = new Map<string, string>();
 
-  constructor(private connectionString: string, private seed: SeedOptions) {}
+  /** A connection string (Neon, Supabase, ...) or explicit pool settings (Wasmer managed database). */
+  constructor(private connection: string | pg.PoolConfig, private seed: SeedOptions) {}
 
   async init(): Promise<void> {
-    const local = /localhost|127\.0\.0\.1/.test(this.connectionString);
-    const insecure = process.env.PG_SSL_INSECURE === '1';
-    this.pool = new pg.Pool({
-      connectionString: this.connectionString,
-      ssl: local ? false : { rejectUnauthorized: !insecure },
-      connectionTimeoutMillis: 5000,
-      max: 5,
-    });
+    const base: pg.PoolConfig = typeof this.connection === 'string'
+      ? {
+          connectionString: this.connection,
+          ssl: /localhost|127\.0\.0\.1/.test(this.connection)
+            ? false
+            : { rejectUnauthorized: process.env.PG_SSL_INSECURE !== '1' },
+        }
+      : this.connection;
+    this.pool = new pg.Pool({ ...base, connectionTimeoutMillis: 5000, max: 5 });
 
     const client = await this.pool.connect();
     try {
@@ -732,4 +734,40 @@ export class PostgresPersistenceAdapter implements PersistenceAdapter {
     }
     this.ready = false;
   }
+}
+
+// ==========================================
+// 3. WHERE IS POSTGRES?
+// ==========================================
+/**
+ * Lookup order:
+ *  1. DATABASE_URL / POSTGRES_URL (Neon, Supabase, ...)
+ *  2. DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD, which Wasmer Edge injects for its managed
+ *     database (it never injects DATABASE_URL).
+ * Returns null when neither is available, or when the Wasmer database is MySQL (this app needs PostgreSQL).
+ */
+export function resolvePostgresConnection(env: NodeJS.ProcessEnv = process.env): string | pg.PoolConfig | null {
+  const url = env.DATABASE_URL || env.POSTGRES_URL;
+  if (url && /^postgres(ql)?:\/\//.test(url)) return url;
+
+  const { DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD } = env;
+  if (!DB_HOST || !DB_NAME || !DB_USERNAME || !DB_PASSWORD) return null;
+
+  if (/^(db|mysql)\./.test(DB_HOST)) {
+    console.error(
+      '❌ The attached Wasmer database is MySQL (host starts with "db." or "mysql."), but this app needs PostgreSQL. ' +
+      'Export anything you need, delete the database, and create a PostgreSQL one in the Databases tab.'
+    );
+    return null;
+  }
+
+  return {
+    host: DB_HOST,
+    port: Number(DB_PORT) || 5432, // managed instances do not use the standard port; DB_PORT is always set
+    database: DB_NAME,
+    user: DB_USERNAME,
+    password: DB_PASSWORD,
+    // TLS stays on; chain verification is off because Wasmer's server certificate comes from a private CA.
+    ssl: { rejectUnauthorized: false },
+  };
 }
