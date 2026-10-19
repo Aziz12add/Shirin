@@ -1,3 +1,4 @@
+cat > package.json <<'EOF'
 {
   "name": "shirin",
   "private": true,
@@ -46,3 +47,4 @@
     "vite": "^6.2.3"
   }
 }
+EOF
