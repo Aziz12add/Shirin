@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch server.ts",
-    "build": "vite build && npm run build:server",
+    "build": "vite build && node build-server.mjs",
     "build:server": "node build-server.mjs",
     "start": "node dist/server/server.cjs",
     "test": "node --import tsx/esm tests/regression.test.ts",
