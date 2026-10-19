@@ -16,7 +16,8 @@ import {
   JsonFilePersistenceAdapter,
   PostgresPersistenceAdapter,
   SeedOptions,
-  createSeedData
+  createSeedData,
+  resolvePostgresConnection
 } from './src/db/persistence';
 import { attachProxy, stats as proxyStats } from './src/server/proxy';
 import { getClientIp, RateLimiter } from './src/server/util';
@@ -93,13 +94,13 @@ app.use(express.json({ limit: '5mb' }));
 // 1. DATABASE
 // ==========================================
 let persistence: PersistenceAdapter;
-const postgresUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+const pgConnection = resolvePostgresConnection();
 
-if (postgresUrl && /^postgres(ql)?:\/\//.test(postgresUrl)) {
+if (pgConnection) {
   console.log('🐘 Using PostgreSQL persistence');
-  persistence = new PostgresPersistenceAdapter(postgresUrl, seedOptions);
+  persistence = new PostgresPersistenceAdapter(pgConnection, seedOptions);
 } else {
-  if (IS_PROD) console.warn('⚠️ DATABASE_URL not set: JSON storage is NOT durable on Wasmer. Data and links will be lost on reset.');
+  if (IS_PROD) console.warn('⚠️ No PostgreSQL configured: JSON storage is NOT durable on Wasmer. Data and links will be lost on reset.');
   console.log('📁 Using JSON file persistence in:', DATA_DIR);
   persistence = new JsonFilePersistenceAdapter(DATA_DIR, seedOptions);
 }
