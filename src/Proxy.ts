@@ -6,14 +6,26 @@ import type { UserAccount } from './types';
 import { RateLimiter, getClientIp } from './Util';
 
 // ==========================================
-// Config
+// Tunable parameters (env-overridable for A/B testing on Wasmer)
 // ==========================================
+const envNum = (name: string, def: number) => {
+  const v = process.env[name];
+  if (!v) return def;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+
 const GB = 1024 ** 3;
-const HIGH_WATER_MARK = 64 * 1024;          // socket buffers (Wasmer is memory constrained)
-const MAX_WS_BUFFERED = 256 * 1024;         // pause upstream when the client side is this far behind
-const MAX_PENDING_BYTES = 256 * 1024;       // data a client may send while we are still connecting upstream
-const MEM_RSS_LIMIT = 420 * 1024 * 1024;
-const MEM_HEAP_LIMIT = 350 * 1024 * 1024;
+// Larger socket buffers → fewer pause/resume cycles → lower latency
+const HIGH_WATER_MARK       = envNum('PROXY_HWM',            256 * 1024);
+const MAX_WS_BUFFERED       = envNum('PROXY_WS_BUFFERED',   512 * 1024);
+const MAX_PENDING_BYTES     = envNum('PROXY_PENDING',       512 * 1024);
+const MEM_RSS_LIMIT         = envNum('PROXY_MEM_RSS',       420 * 1024 * 1024);
+const MEM_HEAP_LIMIT        = envNum('PROXY_MEM_HEAP',      350 * 1024 * 1024);
+const CONNECT_TIMEOUT_MS    = envNum('PROXY_CONNECT_MS',    10_000);
+const WS_PING_INTERVAL_MS   = envNum('PROXY_PING_MS',       30_000);
+const TCP_KEEPALIVE_MS      = envNum('PROXY_KEEPALIVE_MS',  30_000);
+
 const ALLOW_PRIVATE = process.env.ALLOW_PRIVATE_TARGETS === '1';
 const VLESS_ACK = Buffer.from([0x00, 0x00]);
 
@@ -23,14 +35,12 @@ export interface ProxyContext {
   isReady(): boolean;
   findVlessUser(uuid: string): UserAccount | undefined;
   findTrojanUser(sha224Hex: string): UserAccount | undefined;
-  /** Adds traffic to the user and global counters and marks the database dirty. */
   recordUsage(user: UserAccount, up: number, down: number): void;
-  /** Called once per authenticated connection. */
   touchUser(user: UserAccount): void;
 }
 
 // ==========================================
-// Live stats (read by /api/stats)
+// Live stats
 // ==========================================
 export const stats = {
   liveConnections: 0,
@@ -45,7 +55,6 @@ let upWindow = 0;
 let downWindow = 0;
 let memoryExhausted = false;
 
-// One timer for speed meters AND memory sampling (process.memoryUsage per chunk is wasteful).
 setInterval(() => {
   stats.liveUploadSpeedBps = Math.round(upWindow / 2);
   stats.liveDownloadSpeedBps = Math.round(downWindow / 2);
@@ -56,7 +65,7 @@ setInterval(() => {
 }, 2000).unref();
 
 // ==========================================
-// Probe protection & log throttling
+// Probe limiter
 // ==========================================
 const probeLimiter = new RateLimiter(10, 60_000, true);
 const dropped = { vless: 0, trojan: 0 };
@@ -66,7 +75,7 @@ function reportDropped(kind: Kind) {
   dropped[kind]++;
   const now = Date.now();
   if (now - lastDropLog > 60_000) {
-    console.warn(`[proxy] Dropped unauthorized probes in last minute: vless=${dropped.vless}, trojan=${dropped.trojan}`);
+    console.warn(`[proxy] Dropped unauthorized probes: vless=${dropped.vless}, trojan=${dropped.trojan}`);
     dropped.vless = 0;
     dropped.trojan = 0;
     lastDropLog = now;
@@ -74,7 +83,7 @@ function reportDropped(kind: Kind) {
 }
 
 // ==========================================
-// Target safety: don't let authenticated users reach the server's own network
+// Private address guard
 // ==========================================
 function isPrivateAddress(ip: string): boolean {
   if (net.isIPv4(ip)) {
@@ -90,11 +99,10 @@ function isPrivateAddress(ip: string): boolean {
   }
   const v6 = ip.toLowerCase();
   if (v6 === '::' || v6 === '::1') return true;
-  if (v6.startsWith('::ffff:')) return isPrivateAddress(v6.slice(7)); // dotted IPv4-mapped form
+  if (v6.startsWith('::ffff:')) return isPrivateAddress(v6.slice(7));
   return /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6);
 }
 
-// Domains are resolved here so a public name pointing at 127.0.0.1 / 10.x is caught too.
 const safeLookup: any = (hostname: string, options: any, cb: any) => {
   dns.lookup(hostname, options, (err: any, address: any, family: any) => {
     if (err) return cb(err);
@@ -107,7 +115,7 @@ const safeLookup: any = (hostname: string, options: any, cb: any) => {
 };
 
 // ==========================================
-// Header parsers (pure, bounds-checked: a malformed packet must never throw)
+// Header parsers
 // ==========================================
 type Parsed =
   | { ok: true; credential: string; command: number; host: string; port: number; payload: Buffer }
@@ -145,9 +153,9 @@ function parseVless(d: Buffer): Parsed {
   if (d.length < 18) return fail('VLESS: packet too short');
   if (d[0] !== 0) return fail('VLESS: unsupported version');
   const credential = formatUuid(d.subarray(1, 17));
-  const p = 18 + d[17]; // skip addons
+  const p = 18 + d[17];
   if (d.length < p + 4) return fail('VLESS: malformed header');
-  const command = d[p]; // 1 = TCP, 2 = UDP, 3 = MUX
+  const command = d[p];
   const port = d.readUInt16BE(p + 1);
   const type = VLESS_ATYP[d[p + 3]];
   if (!type) return fail('VLESS: unsupported address type');
@@ -160,7 +168,7 @@ function parseTrojan(d: Buffer): Parsed {
   if (d.length < 62) return fail('Trojan: packet too short');
   if (d[56] !== 0x0d || d[57] !== 0x0a) return fail('Trojan: bad header');
   const credential = d.toString('ascii', 0, 56);
-  const command = d[58]; // 1 = CONNECT
+  const command = d[58];
   const type = TROJAN_ATYP[d[59]];
   if (!type) return fail('Trojan: unsupported address type');
   const addr = readAddress(d, 60, type);
@@ -170,9 +178,6 @@ function parseTrojan(d: Buffer): Parsed {
   return { ok: true, credential, command, host: addr.host, port, payload: d.subarray(addr.next + 4) };
 }
 
-// ==========================================
-// Access rules
-// ==========================================
 export function accessDenied(user: UserAccount): string | null {
   if (!user.active) return 'User account suspended';
   if (Date.parse(user.expireAt) < Date.now()) return 'Subscription expired';
@@ -190,35 +195,52 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
   if (probeLimiter.isLimited(ip)) return reject(4003, 'Rate limited');
   if (memoryExhausted || !ctx.isReady()) return reject(1013, 'Server busy or initializing');
 
-  // 'connecting' exists so packets arriving before the upstream is connected are queued,
-  // instead of being mistaken for a second handshake.
   let state: 'auth' | 'connecting' | 'open' = 'auth';
   let user: UserAccount | null = null;
   let expiresAt = 0;
   let upstream: net.Socket | null = null;
-  let throttle: NodeJS.Timeout | null = null;
+  let connectTimer: NodeJS.Timeout | null = null;
+  let keepaliveTimer: NodeJS.Timeout | null = null;
+  let wsAlive = true;
   let counted = false;
   let closed = false;
   let pendingBytes = 0;
   const pending: Buffer[] = [];
 
-  const stopThrottle = () => {
-    if (throttle) { clearInterval(throttle); throttle = null; }
+  const clearTimers = () => {
+    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
   };
 
   const close = () => {
     if (closed) return;
     closed = true;
-    stopThrottle();
+    clearTimers();
     if (counted) stats.liveConnections = Math.max(0, stats.liveConnections - 1);
-    upstream?.destroy();
+    if (upstream && !upstream.destroyed) {
+      try { upstream.end(); } catch {}
+      // allow in-flight writes to flush briefly, then hard-destroy
+      setTimeout(() => { try { upstream?.destroy(); } catch {} }, 100).unref();
+    }
     upstream = null;
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-      try { ws.close(); } catch {}
+      try { ws.close(1000, 'bye'); } catch {}
     }
   };
 
-  // Accounting + quota enforcement on every chunk (a long-lived connection can no longer outlive its quota).
+  // --- WebSocket keepalive: detects half-open connections NAT would otherwise drop silently ---
+  ws.on('pong', () => { wsAlive = true; });
+  keepaliveTimer = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!wsAlive) {
+      console.warn(`[${kind}] keepalive timeout for ${ip}`);
+      return close();
+    }
+    wsAlive = false;
+    try { ws.ping(); } catch { close(); }
+  }, WS_PING_INTERVAL_MS);
+  keepaliveTimer.unref();
+
   const account = (up: number, down: number) => {
     if (!user) return;
     stats.sessionUploadBytes += up;
@@ -226,39 +248,44 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     upWindow += up;
     downWindow += down;
     ctx.recordUsage(user, up, down);
-    if (!user.active || Date.now() >= expiresAt || user.usedUploadBytes + user.usedDownloadBytes >= user.quotaGB * GB) {
+    if (!user.active || Date.now() >= expiresAt ||
+        user.usedUploadBytes + user.usedDownloadBytes >= user.quotaGB * GB) {
       close();
     }
   };
 
-  // client -> target
+  // --- client → target ---
   const forward = (chunk: Buffer) => {
     if (closed || !upstream || upstream.destroyed) return;
     if (!upstream.write(chunk)) {
-      try { ws.pause(); } catch {}   // resumed on upstream 'drain'
+      // Backpressure: stop reading from the client until upstream drains.
+      try { (ws as any).pause?.(); } catch (err) {
+        console.warn(`[${kind}] ws.pause failed:`, (err as Error).message);
+      }
     }
     account(chunk.length, 0);
   };
 
-  // target -> client
+  // --- target → client (event-driven backpressure, NO polling) ---
+  const onSendComplete = (err?: Error) => {
+    if (err) return close();
+    if (closed || !upstream) return;
+    // Hysteresis: resume only after the client buffer has dropped below HWM/2
+    if (upstream.isPaused() && ws.bufferedAmount < HIGH_WATER_MARK / 2 && !memoryExhausted) {
+      upstream.resume();
+    }
+  };
+
   const onUpstreamData = (chunk: Buffer) => {
     if (closed || ws.readyState !== WebSocket.OPEN) return;
     if (memoryExhausted) return close();
 
-    ws.send(chunk, err => { if (err) close(); });
-    account(0, chunk.length);
-
-    if (ws.bufferedAmount > MAX_WS_BUFFERED && !throttle && upstream) {
-      const sock = upstream;
-      sock.pause();
-      throttle = setInterval(() => {
-        if (closed || ws.readyState !== WebSocket.OPEN) return stopThrottle();
-        if (ws.bufferedAmount <= HIGH_WATER_MARK) {
-          stopThrottle();
-          sock.resume();
-        }
-      }, 20);
+    if (upstream && ws.bufferedAmount > MAX_WS_BUFFERED && !upstream.isPaused()) {
+      upstream.pause();
     }
+
+    ws.send(chunk, onSendComplete);
+    account(0, chunk.length);
   };
 
   const connect = (host: string, port: number, payload: Buffer) => {
@@ -272,12 +299,27 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     } as any);
     upstream = sock;
     sock.setNoDelay(true);
+    sock.setKeepAlive(true, TCP_KEEPALIVE_MS);   // NEW: detect dead peers
+
     sock.on('data', onUpstreamData);
-    sock.on('drain', () => { try { ws.resume(); } catch {} });
-    sock.on('error', close);
-    sock.on('close', close);
+    sock.on('drain', () => { try { (ws as any).resume?.(); } catch {} });
+    sock.on('error', (err) => {
+      if (!closed) console.warn(`[${kind}] upstream error: ${err.message}`);
+      close();
+    });
+    sock.on('close', () => close());
+
+    // NEW: prevent hung connections to unreachable targets
+    connectTimer = setTimeout(() => {
+      if (state === 'connecting') {
+        console.warn(`[${kind}] connect timeout to ${host}:${port}`);
+        close();
+      }
+    }, CONNECT_TIMEOUT_MS);
+    connectTimer.unref();
 
     sock.connect({ host, port, lookup: ALLOW_PRIVATE ? undefined : safeLookup }, () => {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
       if (closed) return;
       if (kind === 'vless') {
         try { ws.send(VLESS_ACK); } catch { return close(); }
@@ -293,16 +335,18 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     const parsed = kind === 'vless' ? parseVless(data) : parseTrojan(data);
     if (!parsed.ok) {
       probeLimiter.hit(ip);
-      return reject(1002, 'reason' in parsed ? String((parsed as { reason?: string }).reason ?? 'Bad request') : 'Bad request');
+      return reject(1002, parsed.reason || 'Bad request');
     }
 
-    const found = kind === 'vless' ? ctx.findVlessUser(parsed.credential) : ctx.findTrojanUser(parsed.credential);
+    const found = kind === 'vless'
+      ? ctx.findVlessUser(parsed.credential)
+      : ctx.findTrojanUser(parsed.credential);
+
     if (!found) {
       probeLimiter.hit(ip);
       reportDropped(kind);
       return reject(4003, 'Unauthorized');
     }
-
     const denied = accessDenied(found);
     if (denied) return reject(4003, denied);
     if (parsed.command !== 1) return reject(1002, 'Only TCP is supported');
@@ -320,7 +364,7 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
 
   ws.on('message', (raw: WebSocket.RawData) => {
     try {
-      const data = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw);
+      const data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as any);
       if (state === 'open') return forward(data);
       if (state === 'connecting') {
         pendingBytes += data.length;
@@ -335,23 +379,25 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     }
   });
 
-  ws.on('close', close);
-  ws.on('error', close);
+  ws.on('close', () => close());
+  ws.on('error', (err) => {
+    console.warn(`[${kind}] ws error: ${err.message}`);
+    close();
+  });
 }
 
-// ==========================================
-// Public entry point
-// ==========================================
 export function attachProxy(server: http.Server, ctx: ProxyContext): WebSocketServer {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 256 * 1024,
-    perMessageDeflate: false,
+    perMessageDeflate: false,   // important: compression adds CPU and latency
   });
 
   server.on('upgrade', (request, socket, head) => {
     const pathname = (request.url || '').split('?')[0];
-    const kind: Kind | null = pathname.startsWith('/vless') ? 'vless' : pathname.startsWith('/trojan') ? 'trojan' : null;
+    const kind: Kind | null = pathname.startsWith('/vless') ? 'vless'
+                             : pathname.startsWith('/trojan') ? 'trojan'
+                             : null;
     if (!kind) return socket.destroy();
     wss.handleUpgrade(request, socket, head, ws => handleConnection(ws, request, kind, ctx));
   });
