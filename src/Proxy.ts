@@ -25,6 +25,12 @@ const MEM_HEAP_LIMIT        = envNum('PROXY_MEM_HEAP',      350 * 1024 * 1024);
 const CONNECT_TIMEOUT_MS    = envNum('PROXY_CONNECT_MS',    10_000);
 const WS_PING_INTERVAL_MS   = envNum('PROXY_PING_MS',       30_000);
 const TCP_KEEPALIVE_MS      = envNum('PROXY_KEEPALIVE_MS',  30_000);
+const MAX_MISSED_PONGS      = envNum('PROXY_MISSED_PONGS',  3);
+const IDLE_TIMEOUT_MS       = envNum('PROXY_IDLE_MS',       300_000);
+const AUTH_TIMEOUT_MS       = envNum('PROXY_AUTH_MS',       10_000);
+// Hysteresis thresholds: resume well below pause points to stop flapping
+const WS_RESUME_BUFFERED    = MAX_WS_BUFFERED / 2;
+const CLIENT_RESUME_BUFFERED = HIGH_WATER_MARK / 2;
 
 const ALLOW_PRIVATE = process.env.ALLOW_PRIVATE_TARGETS === '1';
 const VLESS_ACK = Buffer.from([0x00, 0x00]);
@@ -79,6 +85,27 @@ function reportDropped(kind: Kind) {
     dropped.vless = 0;
     dropped.trojan = 0;
     lastDropLog = now;
+  }
+}
+
+// ==========================================
+// Throttled logger: critical events only, max once per minute.
+// Per-connection routine events are aggregated in the counters.
+// ==========================================
+const abnormal = { dead: 0, err: 0, mem: 0 };
+let lastAbnormalLog = 0;
+const CC = 60_000;
+
+function reportAbnormal(type: 'dead' | 'err' | 'mem') {
+  abnormal[type]++;
+  const now = Date.now();
+  if (now - lastAbnormalLog < CC) return;
+  if (abnormal.dead || abnormal.err || abnormal.mem) {
+    console.warn(`[proxy] abnormal disconnects (1m): half-open=${abnormal.dead}, errors=${abnormal.err}, memory=${abnormal.mem}`);
+    abnormal.dead = 0;
+    abnormal.err = 0;
+    abnormal.mem = 0;
+    lastAbnormalLog = now;
   }
 }
 
@@ -201,15 +228,29 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
   let upstream: net.Socket | null = null;
   let connectTimer: NodeJS.Timeout | null = null;
   let keepaliveTimer: NodeJS.Timeout | null = null;
+  let idleTimer: NodeJS.Timeout | null = null;
   let wsAlive = true;
+  let missedPongs = 0;
   let counted = false;
   let closed = false;
   let pendingBytes = 0;
+  let clientPaused = false; // ws.pause() while upstream socket write buffer is full
+  let wsBackpressed = false; // upstream.pause() while ws bufferedAmount is high
   const pending: Buffer[] = [];
 
   const clearTimers = () => {
     if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  };
+
+  // Idle timeout: kills silent half-open connections no traffic keeps warm.
+  // Short grace while auth/pending, longer for an established relay.
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    const ms = state === 'open' ? IDLE_TIMEOUT_MS : AUTH_TIMEOUT_MS;
+    idleTimer = setTimeout(() => { reportAbnormal('dead'); close(); }, ms);
+    idleTimer.unref();
   };
 
   const close = () => {
@@ -228,18 +269,23 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     }
   };
 
-  // --- WebSocket keepalive: detects half-open connections NAT would otherwise drop silently ---
-  ws.on('pong', () => { wsAlive = true; });
+  // --- WebSocket keepalive: detects half-open connections NAT would otherwise drop silently.
+  // Tolerates MAX_MISSED_PONGS missed pongs (mobile networks like MCI/Irancell lose packets under load),
+  // and terminate() is required: close() alone never completes for a peer that has vanished.
+  ws.on('pong', () => { wsAlive = true; missedPongs = 0; });
   keepaliveTimer = setInterval(() => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    if (!wsAlive) {
-      console.warn(`[${kind}] keepalive timeout for ${ip}`);
+    if (closed || ws.readyState !== WebSocket.OPEN) return;
+    missedPongs++;
+    if (missedPongs > MAX_MISSED_PONGS) {
+      reportAbnormal('dead');
+      try { ws.terminate(); } catch {}
       return close();
     }
     wsAlive = false;
     try { ws.ping(); } catch { close(); }
   }, WS_PING_INTERVAL_MS);
   keepaliveTimer.unref();
+  armIdle();
 
   const account = (up: number, down: number) => {
     if (!user) return;
@@ -257,30 +303,32 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
   // --- client → target ---
   const forward = (chunk: Buffer) => {
     if (closed || !upstream || upstream.destroyed) return;
-    if (!upstream.write(chunk)) {
+    if (!upstream.write(chunk) && !clientPaused && typeof (ws as any).pause === 'function') {
       // Backpressure: stop reading from the client until upstream drains.
-      try { (ws as any).pause?.(); } catch (err) {
-        console.warn(`[${kind}] ws.pause failed:`, (err as Error).message);
-      }
+      clientPaused = true;
+      try { (ws as any).pause(); } catch { clientPaused = false; }
     }
     account(chunk.length, 0);
   };
 
-  // --- target → client (event-driven backpressure, NO polling) ---
+  // --- target → client (event-driven backpressure with hysteresis, NO polling) ---
   const onSendComplete = (err?: Error) => {
     if (err) return close();
     if (closed || !upstream) return;
-    // Hysteresis: resume only after the client buffer has dropped below HWM/2
-    if (upstream.isPaused() && ws.bufferedAmount < HIGH_WATER_MARK / 2 && !memoryExhausted) {
+    // Hysteresis: resume only after ws buffer dropped well below the pause point
+    if (wsBackpressed && ws.bufferedAmount < WS_RESUME_BUFFERED && !memoryExhausted) {
+      wsBackpressed = false;
       upstream.resume();
     }
   };
 
   const onUpstreamData = (chunk: Buffer) => {
     if (closed || ws.readyState !== WebSocket.OPEN) return;
-    if (memoryExhausted) return close();
+    if (memoryExhausted) { reportAbnormal('mem'); return close(); }
+    armIdle();
 
-    if (upstream && ws.bufferedAmount > MAX_WS_BUFFERED && !upstream.isPaused()) {
+    if (upstream && ws.bufferedAmount > MAX_WS_BUFFERED && !wsBackpressed) {
+      wsBackpressed = true;
       upstream.pause();
     }
 
@@ -302,17 +350,20 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     sock.setKeepAlive(true, TCP_KEEPALIVE_MS);   // NEW: detect dead peers
 
     sock.on('data', onUpstreamData);
-    sock.on('drain', () => { try { (ws as any).resume?.(); } catch {} });
-    sock.on('error', (err) => {
-      if (!closed) console.warn(`[${kind}] upstream error: ${err.message}`);
-      close();
+    sock.on('drain', () => {
+      // Hysteresis: release the client only once it is safe below the resume point
+      if (clientPaused && ws.bufferedAmount < CLIENT_RESUME_BUFFERED) {
+        clientPaused = false;
+        try { (ws as any).resume?.(); } catch { clientPaused = true; }
+      }
     });
+    sock.on('error', () => { reportAbnormal('err'); close(); });
     sock.on('close', () => close());
 
-    // NEW: prevent hung connections to unreachable targets
+    // Prevent hung connects to unreachable targets
     connectTimer = setTimeout(() => {
       if (state === 'connecting') {
-        console.warn(`[${kind}] connect timeout to ${host}:${port}`);
+        reportAbnormal('err');
         close();
       }
     }, CONNECT_TIMEOUT_MS);
@@ -321,10 +372,11 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
     sock.connect({ host, port, lookup: ALLOW_PRIVATE ? undefined : safeLookup }, () => {
       if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
       if (closed) return;
+      state = 'open';
+      armIdle(); // switch to the long idle window
       if (kind === 'vless') {
         try { ws.send(VLESS_ACK); } catch { return close(); }
       }
-      state = 'open';
       if (payload.length) forward(payload);
       for (const chunk of pending.splice(0)) forward(chunk);
       pendingBytes = 0;
@@ -365,6 +417,7 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
   ws.on('message', (raw: WebSocket.RawData) => {
     try {
       const data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as any);
+      armIdle();
       if (state === 'open') return forward(data);
       if (state === 'connecting') {
         pendingBytes += data.length;
@@ -374,14 +427,18 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage, kind: Kind, 
       }
       onFirstPacket(data);
     } catch (err) {
-      console.error(`[${kind}] connection error:`, (err as Error)?.message || err);
+      reportAbnormal('err');
       close();
     }
   });
 
   ws.on('close', () => close());
-  ws.on('error', (err) => {
-    console.warn(`[${kind}] ws error: ${err.message}`);
+  ws.on('error', () => {
+    reportAbnormal('err');
+    close();
+  });
+  ws.on('unexpected-response', () => {
+    reportAbnormal('err');
     close();
   });
 }
