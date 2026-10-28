@@ -22,7 +22,7 @@ export interface ProxyConfig {
   realityShortId?: string;
   spiderX?: string;
   remark: string;
-  operatorPreset?: 'all' | 'mci' | 'irancell' | 'rightel' | 'mokhaberat' | 'custom';
+  operatorPreset?: 'all' | 'mci' | 'irancell' | 'rightel' | 'mokhaberat' | 'fixed' | 'custom';
   cleanIp?: string;
   useCleanIp?: boolean; // Explicit opt-in flag: if true, client connects to cleanIp; otherwise connects to server
   // Fragment anti-censorship parameters (supported by MahsaNG, V2rayNG, sing-box, Xray)

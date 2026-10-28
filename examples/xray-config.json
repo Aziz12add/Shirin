@@ -1,0 +1,32 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "port": 3000,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "11111111-2222-3333-4444-555555555555", "level": 0 }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/vless" }
+      }
+    },
+    {
+      "port": 3001,
+      "protocol": "trojan",
+      "settings": {
+        "clients": [{ "password": "CHANGE_ME_TROJAN_PASSWORD", "level": 0 }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/trojan" }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom", "tag": "direct" },
+    { "protocol": "blackhole", "tag": "blocked" }
+  ]
+}

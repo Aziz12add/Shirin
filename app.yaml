@@ -2,3 +2,18 @@ kind: wasmer.io/App.v0
 owner: Aziz12add
 name: shirin
 package: .
+
+# Secrets (SESSION_SECRET, ADMIN_PASS, DATABASE_URL) belong in the Wasmer dashboard, not in this file.
+env:
+  NODE_ENV: "production"
+  PORT: "8080"
+  PUBLIC_HOST: "shirin.wasmer.app"
+
+capabilities:
+  instaboot:
+    requests:
+      - path: /
+
+locality:
+  regions:
+    - fr-roub1

@@ -1,13 +1,25 @@
 [package]
 name = "shirin"
 version = "0.1.0"
+description = "Shirin - Proxy & subscription manager on Wasmer Edge"
+license = "MIT"
 
-[[module]]
-name = "shirin-server"
-source = "dist/server/server.cjs"
-abi = "wasi"
+[dependencies]
+"wasmer/edgejs" = "0.1.24"
 
-[command]
-name = "shirin"
-module = "shirin-server"
-runner = "wasi"
+[fs]
+"/app" = "."
+
+[[command]]
+name = "server"
+module = "wasmer/edgejs:node"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+main-args = ["/app/dist/server/server.cjs"]
+env = [
+  "NODE_ENV=production",
+  "PORT=8080",
+  "HOME=/tmp",
+  "DATA_DIR=/tmp/shirin-data"
+]
