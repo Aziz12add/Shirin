@@ -3,6 +3,7 @@ name = "shirin"
 version = "0.1.0"
 description = "Shirin - Proxy & subscription manager on Wasmer Edge"
 license = "MIT"
+entrypoint = "server"
 
 [dependencies]
 "wasmer/edgejs" = "0.1.24"
