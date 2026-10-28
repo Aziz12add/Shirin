@@ -1,0 +1,13 @@
+[package]
+name = "shirin"
+version = "0.1.0"
+
+[[module]]
+name = "shirin-server"
+source = "dist/server/server.cjs"
+abi = "wasi"
+
+[command]
+name = "shirin"
+module = "shirin-server"
+runner = "wasi"

@@ -1,0 +1,4 @@
+name: shirin
+owner: Aziz12add
+package:
+  manifest: ./wasmer.toml
