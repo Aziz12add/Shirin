@@ -653,3 +653,25 @@ export function attachProxy(server: http.Server, ctx: ProxyContext): WebSocketSe
 
   return wss;
 }
+
+// Enhanced proxy settings for better DPI bypass and stability
+export const PROXY_ENHANCED = {
+  // TCP optimizations
+  TCP_NODELAY: true,
+  TCP_KEEPALIVE: true,
+  TCP_KEEPIDLE: 30,
+  TCP_KEEPINTVL: 10,
+  TCP_KEEPCNT: 3,
+  
+  // Buffer optimizations
+  READ_BUFFER_SIZE: 64 * 1024,
+  WRITE_BUFFER_SIZE: 64 * 1024,
+  
+  // Connection optimizations
+  FAST_OPEN: true,
+  REUSEADDR: true,
+  
+  // DPI bypass
+  RANDOMIZE_PACKET_SIZES: process.env.PROXY_RANDOMIZE_PACKETS === '1',
+  FAKE_HTTP_HEADERS: process.env.PROXY_FAKE_HEADERS === '1',
+};

@@ -8,7 +8,8 @@ await build({
   target: 'node20',
   minify: true,
   sourcemap: false,
-  external: ['vite', 'pg-native', 'bufferutil', 'utf-8-validate'],
+  external: ['vite', 'pg-native', 'bufferutil', 'utf-8-validate', 'fsevents'],
   outfile: 'dist/server/server.cjs',
   logLevel: 'info',
+  treeShaking: true,
 });

@@ -265,3 +265,49 @@ export function formatBytes(bytes: number, decimals = 2): string {
   const i = Math.min(sizes.length - 1, Math.max(0, Math.floor(Math.log(bytes) / Math.log(k))));
   return `${parseFloat((bytes / k ** i).toFixed(Math.max(0, decimals)))} ${sizes[i]}`;
 }
+
+// ==========================================
+// Enhanced helpers for better client compatibility
+// ==========================================
+
+/** Get transport type with better defaults */
+export function getTransportType(c: ProxyConfig): string {
+  const t = (c.transport || 'ws').toLowerCase();
+  // Normalize common variants
+  if (t === 'websocket') return 'ws';
+  if (t === 'httpupgrade') return 'httpupgrade';
+  if (t === 'xhttp') return 'xhttp';
+  if (t === 'splithttp') return 'splithttp';
+  return t;
+}
+
+/** Enhanced transport params for better compatibility */
+export function enhancedTransportParams(c: ProxyConfig): URLSearchParams {
+  const p = transportParams(c);
+  const t = getTransportType(c);
+  p.set('type', t);
+  
+  // For HTTPUpgrade
+  if (t === 'httpupgrade') {
+    p.set('path', c.path || '/');
+    if (c.host || c.sni || c.server) {
+      p.set('host', c.host || c.sni || c.server);
+    }
+  }
+  
+  // For gRPC
+  if (t === 'grpc') {
+    p.set('serviceName', c.path || 'GunService');
+    p.set('mode', (c as any).mode || 'gun');
+  }
+  
+  // For h2
+  if (t === 'h2') {
+    p.set('path', c.path || '/');
+    if (c.host || c.sni || c.server) {
+      p.set('host', c.host || c.sni || c.server);
+    }
+  }
+  
+  return p;
+}
