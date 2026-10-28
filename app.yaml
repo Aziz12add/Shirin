@@ -1,4 +1,4 @@
-name: shirin
+kind: wasmer.io/App.v0
 owner: Aziz12add
-package:
-  manifest: ./wasmer.toml
+name: shirin
+package: .
