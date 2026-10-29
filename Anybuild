@@ -1,0 +1,29 @@
+# Anybuild — Shirin (Node/Express server + Vite client)
+# Force the Node *server* provider (not static) so Anybuild deploys with
+# the edgejs Node runtime instead of static-web-server.
+
+load("//anybuild/tools:node.bzl", "node_build", "node_config", "node_serve")
+
+config = node_config(
+    schema = 1,
+    commands = {
+        "start": "node dist/server/server.cjs",
+    },
+    node_package_manager = "npm",
+    node_server = "express",
+    node_version = "24",
+    npm_version = "11",
+)
+
+build = node_build(config)
+
+node_serve(
+    config,
+    build,
+    name = "shirin",
+    env = {
+        "NODE_ENV": "production",
+        "HOME": "/tmp",
+        "DATA_DIR": "/tmp/shirin-data",
+    },
+)
