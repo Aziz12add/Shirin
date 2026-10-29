@@ -16,14 +16,14 @@ license = "MIT"
 entrypoint = "server"
 
 [dependencies]
-"wasmer/edgejs" = "0.1.24"
+"wasmer/edgejs" = "0.2.5"
 
 [fs]
 "/app" = "."
 
 [[command]]
 name = "server"
-module = "wasmer/edgejs:node"
+module = "wasmer/edgejs:edge"
 runner = "https://webc.org/runner/wasi"
 
 [command.annotations.wasi]
